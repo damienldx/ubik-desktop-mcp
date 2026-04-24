@@ -5,12 +5,30 @@ import json
 import sys
 import urllib.request
 import urllib.error
-import os
 import yaml
+import re
 from pathlib import Path
 from typing import Any
 
 BASE = "http://127.0.0.1:7891"
+
+# Stopwords pour éviter la pollution du matching (FR + EN)
+STOPWORDS = {
+    # Français
+    "le", "la", "les", "un", "une", "des", "du", "de", "ce", "cet", "cette", "ces",
+    "mon", "ton", "son", "ma", "ta", "sa", "mes", "tes", "ses", "notre", "votre", "leur",
+    "nos", "vos", "leurs", "je", "tu", "il", "elle", "on", "nous", "vous", "ils", "elles",
+    "me", "te", "se", "lui", "leur", "y", "en", "qui", "que", "quoi", "dont", "où",
+    "et", "ou", "mais", "donc", "car", "ni", "or", "si", "pour", "par", "dans", "sur",
+    "avec", "sans", "sous", "vers", "chez", "est", "sont", "être", "avoir", "fait", "faire",
+    # Anglais
+    "the", "a", "an", "and", "or", "but", "if", "then", "else", "when", "at", "from",
+    "by", "for", "with", "about", "against", "between", "into", "through", "during",
+    "before", "after", "above", "below", "to", "up", "down", "in", "out", "on", "off",
+    "over", "under", "again", "further", "once", "here", "there", "all", "any", "both",
+    "each", "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only",
+    "own", "same", "so", "than", "too", "very", "can", "will", "just", "should", "now"
+}
 
 def http(method: str, path: str, body: dict | None = None) -> Any:
     data = json.dumps(body).encode() if body else None
@@ -125,8 +143,8 @@ def handle_tool(name: str, args: dict) -> str:
     elif name == "ubik_create_session":
         tab_id   = args["tab_id"]
         agent_id = args.get("agent_id")
-        agents_dir = f"{__import__('pathlib').Path.home()}/.ubik-desktop/agents"
-        agent_path = f"{agents_dir}/{agent_id}.md" if agent_id else None
+        agents_dir = Path.home() / ".ubik-desktop" / "agents"
+        agent_path = str(agents_dir / f"{agent_id}.md") if agent_id else None
         body = {
             "tab_id": tab_id,
             "rows": 40,
@@ -151,7 +169,6 @@ def handle_tool(name: str, args: dict) -> str:
         if not output:
             return "(buffer vide — ubik-genie n'a peut-être pas encore répondu)"
         # Strip ANSI for readability
-        import re
         clean = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]', '', output)
         clean = re.sub(r'\x1b\][^\x07]*\x07', '', clean)
         clean = clean.replace('\r\n', '\n').replace('\r', '')
@@ -172,8 +189,14 @@ def handle_tool(name: str, args: dict) -> str:
         max_score = 0
         reasoning = "Aucun agent ne correspond de manière significative."
         
-        prompt_words = set(prompt.split())
+        # Nettoyage du prompt (ponctuation + stopwords)
+        clean_prompt = re.sub(r'[^\w\s]', ' ', prompt)
+        prompt_words = {w for w in clean_prompt.split() if w not in STOPWORDS and len(w) > 1}
         
+        if not prompt_words:
+            # Si le prompt ne contient que des stopwords, on tente un match exact sur l'ID quand même
+            prompt_words = set(prompt.split())
+
         for agent_file in agents_dir.glob("*.md"):
             try:
                 content = agent_file.read_text()
@@ -196,44 +219,45 @@ def handle_tool(name: str, args: dict) -> str:
                 score = 0
                 matches = []
                 
-                # Matching ID
+                # Matching ID (poids fort)
                 if agent_id.lower() in prompt:
-                    score += 5
+                    score += 8
                     matches.append(f"ID match ({agent_id})")
                 
-                # Matching Description
-                desc_words = set(description.split())
+                # Matching Description (filtré par stopwords)
+                clean_desc = re.sub(r'[^\w\s]', ' ', description)
+                desc_words = {w for w in clean_desc.split() if w not in STOPWORDS and len(w) > 1}
                 common_desc = prompt_words.intersection(desc_words)
                 if common_desc:
-                    score += len(common_desc) * 2
+                    score += len(common_desc) * 3
                     matches.append(f"Description matches: {list(common_desc)}")
                 
                 # Matching Tags
                 for tag in tags:
                     if tag.lower() in prompt:
-                        score += 3
+                        score += 4
                         matches.append(f"Tag match: {tag}")
                 
                 # Matching Skills
                 for skill in skills:
                     if skill.lower() in prompt:
-                        score += 1
+                        score += 2
                         matches.append(f"Skill match: {skill}")
                 
                 if score > max_score:
                     max_score = score
-                    # Confidence normalisée arbitraire (max score observé ~10-15 pour un bon match)
-                    confidence = min(1.0, score / 15.0)
+                    # Confidence normalisée (diviseur augmenté à 20 pour être plus conservateur)
+                    confidence = min(1.0, score / 20.0)
                     best_agent = {
                         "agent_id": agent_id,
                         "confidence": round(confidence, 2),
                         "reasoning": f"Matches trouvés: {', '.join(matches)}",
                         "skills_bias": skills
                     }
-            except Exception as e:
+            except Exception:
                 continue
 
-        if best_agent:
+        if best_agent and best_agent["confidence"] > 0.15:
             return json.dumps(best_agent)
         else:
             return json.dumps({"agent_id": None, "confidence": 0.0, "reasoning": reasoning, "skills_bias": []})
@@ -263,7 +287,7 @@ def main():
             send({"jsonrpc": "2.0", "id": req_id, "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "ubik-desktop-mcp", "version": "1.0.0"},
+                "serverInfo": {"name": "ubik-desktop-mcp", "version": "2.0.0"},
             }})
 
         elif method == "tools/list":
