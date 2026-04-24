@@ -3,6 +3,7 @@
 
 import json
 import sys
+import time
 import urllib.request
 import urllib.error
 import yaml
@@ -114,6 +115,23 @@ TOOLS = [
         },
     },
     {
+        "name": "ubik_interrupt",
+        "description": (
+            "Interrompt la commande en cours dans un terminal UBIK-DESKTOP (Ctrl+C PTY), "
+            "puis injecte un message de redirection. "
+            "À utiliser quand un agent dévie de sa mission : build intempestif, boucle infinie, mauvais chemin. "
+            "Force l'agent à lire les nouvelles instructions immédiatement."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tab_id":  {"type": "string", "description": "ID du terminal à interrompre"},
+                "message": {"type": "string", "description": "Instructions de redirection envoyées après l'interruption"},
+            },
+            "required": ["tab_id", "message"],
+        },
+    },
+    {
         "name": "ubik_route_agent",
         "description": "Trouve l'agent le plus pertinent pour un prompt donné en analysant les manifests locaux.",
         "inputSchema": {
@@ -173,6 +191,17 @@ def handle_tool(name: str, args: dict) -> str:
         clean = re.sub(r'\x1b\][^\x07]*\x07', '', clean)
         clean = clean.replace('\r\n', '\n').replace('\r', '')
         return clean.strip()
+
+    elif name == "ubik_interrupt":
+        tab_id  = args["tab_id"]
+        message = args["message"]
+        # Ctrl+C interrompt la commande en cours dans le PTY
+        http("POST", "/pty/write", {"tab_id": tab_id, "text": "\x03"})
+        time.sleep(0.5)
+        if not message.endswith("\r"):
+            message += "\r"
+        result = http("POST", "/pty/write", {"tab_id": tab_id, "text": message})
+        return "Interrompu et redirigé." if result.get("ok") else f"Erreur: {result}"
 
     elif name == "ubik_kill_session":
         tab_id = args["tab_id"]
