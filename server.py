@@ -5,6 +5,9 @@ import json
 import sys
 import urllib.request
 import urllib.error
+import os
+import yaml
+from pathlib import Path
 from typing import Any
 
 BASE = "http://127.0.0.1:7891"
@@ -92,6 +95,17 @@ TOOLS = [
             "required": ["tab_id"],
         },
     },
+    {
+        "name": "ubik_route_agent",
+        "description": "Trouve l'agent le plus pertinent pour un prompt donné en analysant les manifests locaux.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string", "description": "Le besoin de l'utilisateur à router"},
+            },
+            "required": ["prompt"],
+        },
+    },
 ]
 
 def handle_tool(name: str, args: dict) -> str:
@@ -147,6 +161,82 @@ def handle_tool(name: str, args: dict) -> str:
         tab_id = args["tab_id"]
         result = http("DELETE", f"/pty/{tab_id}")
         return f"Session '{tab_id}' fermée." if result.get("ok") else f"Erreur: {result}"
+
+    elif name == "ubik_route_agent":
+        prompt = args.get("prompt", "").lower()
+        agents_dir = Path.home() / ".ubik-desktop" / "agents"
+        if not agents_dir.exists():
+            return json.dumps({"agent_id": None, "confidence": 0.0, "reasoning": "Répertoire agents introuvable.", "skills_bias": []})
+
+        best_agent = None
+        max_score = 0
+        reasoning = "Aucun agent ne correspond de manière significative."
+        
+        prompt_words = set(prompt.split())
+        
+        for agent_file in agents_dir.glob("*.md"):
+            try:
+                content = agent_file.read_text()
+                if not content.startswith("---"):
+                    continue
+                
+                parts = content.split("---", 2)
+                if len(parts) < 3:
+                    continue
+                
+                frontmatter = yaml.safe_load(parts[1])
+                if not frontmatter:
+                    continue
+                
+                agent_id = frontmatter.get("id", agent_file.stem)
+                description = frontmatter.get("description", "").lower()
+                tags = frontmatter.get("metadata", {}).get("tags", [])
+                skills = frontmatter.get("context", {}).get("skills_bias", [])
+                
+                score = 0
+                matches = []
+                
+                # Matching ID
+                if agent_id.lower() in prompt:
+                    score += 5
+                    matches.append(f"ID match ({agent_id})")
+                
+                # Matching Description
+                desc_words = set(description.split())
+                common_desc = prompt_words.intersection(desc_words)
+                if common_desc:
+                    score += len(common_desc) * 2
+                    matches.append(f"Description matches: {list(common_desc)}")
+                
+                # Matching Tags
+                for tag in tags:
+                    if tag.lower() in prompt:
+                        score += 3
+                        matches.append(f"Tag match: {tag}")
+                
+                # Matching Skills
+                for skill in skills:
+                    if skill.lower() in prompt:
+                        score += 1
+                        matches.append(f"Skill match: {skill}")
+                
+                if score > max_score:
+                    max_score = score
+                    # Confidence normalisée arbitraire (max score observé ~10-15 pour un bon match)
+                    confidence = min(1.0, score / 15.0)
+                    best_agent = {
+                        "agent_id": agent_id,
+                        "confidence": round(confidence, 2),
+                        "reasoning": f"Matches trouvés: {', '.join(matches)}",
+                        "skills_bias": skills
+                    }
+            except Exception as e:
+                continue
+
+        if best_agent:
+            return json.dumps(best_agent)
+        else:
+            return json.dumps({"agent_id": None, "confidence": 0.0, "reasoning": reasoning, "skills_bias": []})
 
     return f"Outil inconnu: {name}"
 
