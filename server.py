@@ -59,16 +59,23 @@ TOOLS = [
     {
         "name": "ubik_create_session",
         "description": (
-            "Ouvre une nouvelle session PTY dans UBIK-DESKTOP. "
-            "agent_id est l'id d'un agent (ex: 'foundry-smith'). "
-            "tab_id identifie le terminal (ex: 'mcp-0'). "
-            "Si agent_id est omis, ouvre un terminal ubik-genie générique."
+            "Spawn un worker MCP dans UBIK-DESKTOP, paramétré avec model+skills, et le branche "
+            "automatiquement à un thread Paperclip. Le worker reçoit sa tâche en prompt et reporte "
+            "automatiquement (commentaire à chaque milestone, status=done à la fin, approval si bloqué). "
+            "Si task et/ou model est fourni : crée un agent Paperclip dynamique + un thread, injecte le "
+            "token Bearer + agentId + threadId dans l'env du PTY, et envoie la tâche au worker. "
+            "Si seul tab_id est fourni : ouvre un PTY générique (mode legacy)."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "tab_id":   {"type": "string", "description": "Identifiant unique du terminal"},
-                "agent_id": {"type": "string", "description": "ID de l'agent à charger (optionnel)"},
+                "tab_id":    {"type": "string", "description": "Identifiant unique du terminal (ex: 'mcp-0')"},
+                "agent_id":  {"type": "string", "description": "ID d'un agent persona local (~/.ubik-desktop/agents/{id}.md). Optionnel."},
+                "name":      {"type": "string", "description": "Nom du worker dans Paperclip (ex: 'auth-refactorer'). Si absent, dérivé de tab_id."},
+                "model":     {"type": "string", "description": "Adapter Paperclip (ex: 'claude_local','codex_local','gemini_local','http'). Default 'claude_local'."},
+                "skills":    {"type": "array", "items": {"type": "string"}, "description": "Skills attribués (doivent exister dans la company). Optionnel."},
+                "task":      {"type": "string", "description": "La tâche à confier au worker — devient le prompt initial. Active le mode Paperclip auto."},
+                "thread_id": {"type": "string", "description": "ID d'un thread Paperclip existant à attacher au worker. Si absent et task fourni, un thread est créé."},
             },
             "required": ["tab_id"],
         },
@@ -163,14 +170,32 @@ def handle_tool(name: str, args: dict) -> str:
         agent_id = args.get("agent_id")
         agents_dir = Path.home() / ".ubik-desktop" / "agents"
         agent_path = str(agents_dir / f"{agent_id}.md") if agent_id else None
+
+        # ── Plain spawn (Paperclip wiring removed — isolation test) ─────────
+        worker_name = args.get("name") or f"worker-{tab_id}"
+        task = args.get("task")
+
         body = {
             "tab_id": tab_id,
             "rows": 40,
             "cols": 200,
             "agent": agent_path,
+            "env": {},
         }
         result = http("POST", "/pty/create", body)
-        return f"Session '{tab_id}' créée." if result.get("ok") else f"Erreur: {result}"
+        if not result.get("ok"):
+            return f"Erreur spawn: {result}"
+
+        if task:
+            time.sleep(0.5)
+            http("POST", "/pty/write", {"tab_id": tab_id, "text": task + "\r"})
+
+        summary = {
+            "tab_id": tab_id,
+            "worker_name": worker_name,
+            "task_dispatched": bool(task),
+        }
+        return json.dumps(summary, ensure_ascii=False, indent=2)
 
     elif name == "ubik_write":
         tab_id = args["tab_id"]
