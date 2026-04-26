@@ -2,16 +2,21 @@
 """MCP server — UBIK-DESKTOP bridge (port 7891)"""
 
 import json
+import socket
 import sys
 import time
 import urllib.request
 import urllib.error
 import yaml
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 BASE = "http://127.0.0.1:7891"
+PAPERCLIP_API = "http://127.0.0.1:3100/api"
+SYSTEM_REGISTRY = Path.home() / ".ubik-desktop" / "system-agents.json"
+SOCKETS_DIR = Path.home() / ".ubik-desktop" / "sockets"
 
 # Stopwords pour éviter la pollution du matching (FR + EN)
 STOPWORDS = {
@@ -44,6 +49,69 @@ def http(method: str, path: str, body: dict | None = None) -> Any:
             return json.loads(r.read())
     except urllib.error.URLError as e:
         return {"error": str(e), "ok": False}
+
+
+def pc_call(method: str, path: str, body: dict | None = None) -> Any:
+    """Call Paperclip API (local tunnel, no bearer needed for board ops in dev)."""
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(
+        f"{PAPERCLIP_API}{path}",
+        data=data,
+        method=method,
+        headers={"Content-Type": "application/json"} if data else {},
+    )
+    with urllib.request.urlopen(req, timeout=15) as r:
+        raw = r.read()
+        if not raw:
+            return {}
+        return json.loads(raw)
+
+
+def _registry_load() -> dict:
+    if not SYSTEM_REGISTRY.exists():
+        return {}
+    try:
+        return json.loads(SYSTEM_REGISTRY.read_text())
+    except Exception:
+        return {}
+
+
+def _registry_save_all(data: dict) -> None:
+    SYSTEM_REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+    SYSTEM_REGISTRY.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def _registry_set(agent_id: str, info: dict) -> None:
+    reg = _registry_load()
+    reg[agent_id] = info
+    _registry_save_all(reg)
+
+
+def _registry_remove(agent_id: str) -> dict | None:
+    reg = _registry_load()
+    info = reg.pop(agent_id, None)
+    _registry_save_all(reg)
+    return info
+
+
+def _registry_for_thread(thread_id: str) -> dict[str, dict]:
+    reg = _registry_load()
+    return {aid: info for aid, info in reg.items() if info.get("threadId") == thread_id}
+
+
+def _wake_socket(tab_id: str, payload: str) -> bool:
+    """Atomic write to ubik-cli socket — interrupts prompt_toolkit via _MCPWake."""
+    sock_path = SOCKETS_DIR / f"{tab_id}.sock"
+    if not sock_path.exists():
+        return False
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.connect(str(sock_path))
+        s.sendall(payload.encode("utf-8"))
+        s.close()
+        return True
+    except Exception:
+        return False
 
 TOOLS = [
     {
@@ -149,6 +217,133 @@ TOOLS = [
             "required": ["prompt"],
         },
     },
+    {
+        "name": "system_spawn_agent",
+        "description": (
+            "Spawn un agent SYSTEM (UBIK-CLI headless) attaché à un thread Paperclip. "
+            "Crée l'agent côté Paperclip, optionnellement crée un thread, lance un PTY background invisible. "
+            "L'agent reçoit son env (PAPERCLIP_AGENT_ID/THREAD_ID/API_KEY) et peut commenter, reporter, demander des approvals."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name":             {"type": "string", "description": "Nom de l'agent (ex: 'codex-refactor-auth')."},
+                "threadId":         {"type": "string", "description": "Thread Paperclip existant à rejoindre. Si absent, un nouveau thread est créé."},
+                "title":            {"type": "string", "description": "Titre du thread si on en crée un nouveau."},
+                "role":             {"type": "string", "description": "Rôle Paperclip (default: engineer)."},
+                "model":            {"type": "string", "description": "Adapter Paperclip (default: claude_local)."},
+                "skills":           {"type": "array", "items": {"type": "string"}},
+                "workspace":        {"type": "string", "description": "Path du dossier isolé où l'agent travaille."},
+                "initialDirective": {"type": "string", "description": "Premier message à envoyer à l'agent au démarrage."},
+                "companyId":        {"type": "string", "description": "Company UUID. Sinon prend la première company."},
+            },
+            "required": ["name"],
+        },
+    },
+    {
+        "name": "system_send_to_thread",
+        "description": (
+            "Poste un commentaire dans un thread ET wake tous les agents SYSTEM attachés à ce thread "
+            "(sauf l'auteur). Primitive unifiée que humain/CLI/agent doivent utiliser pour communiquer."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "threadId":       {"type": "string"},
+                "body":           {"type": "string"},
+                "authorAgentId":  {"type": "string", "description": "ID Paperclip de l'auteur. Exclu du wake. Si absent, traité comme humain (board)."},
+            },
+            "required": ["threadId", "body"],
+        },
+    },
+    {
+        "name": "system_interrupt_agent",
+        "description": (
+            "Envoie SIGINT (Ctrl+C) à un agent SYSTEM headless. "
+            "Interrompt la commande/round LLM en cours sans tuer le process. "
+            "À utiliser quand un agent boucle, est bloqué, ou doit recevoir une nouvelle directive immédiatement. "
+            "Le SIGINT vise le foreground process group du PTY — pas seulement le shell leader."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agentId": {"type": "string", "description": "ID Paperclip de l'agent à interrompre."},
+            },
+            "required": ["agentId"],
+        },
+    },
+    {
+        "name": "system_stop_agent",
+        "description": "Stoppe proprement un agent SYSTEM : kill le PTY background, retire du registre.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agentId": {"type": "string", "description": "ID Paperclip de l'agent à stopper."},
+            },
+            "required": ["agentId"],
+        },
+    },
+    {
+        "name": "system_list_agents",
+        "description": "Liste les agents SYSTEM actifs dans cette session DESKTOP. Filtrable par thread.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "threadId": {"type": "string", "description": "Si fourni, ne retourne que les agents attachés à ce thread."},
+            },
+        },
+    },
+    {
+        "name": "system_react_to_comment",
+        "description": (
+            "Réagit à un commentaire avec un emoji (👍, 🚀, 🛑, ❤, ✅, ❌…). "
+            "Encode la réaction comme un commentaire spécial '`:reaction:<emoji>:<targetCommentId>`' "
+            "que l'UI groupe sous le commentaire cible. Pas de wake (signal léger)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "threadId":         {"type": "string"},
+                "targetCommentId":  {"type": "string", "description": "ID du commentaire à réagir."},
+                "emoji":            {"type": "string", "description": "L'emoji de la réaction."},
+            },
+            "required": ["threadId", "targetCommentId", "emoji"],
+        },
+    },
+    {
+        "name": "system_set_topic",
+        "description": (
+            "Définit ou met à jour le topic épinglé d'un thread (= description Paperclip). "
+            "Le topic est ce que tout nouvel agent rejoignant le thread voit en premier comme contexte directeur."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "threadId": {"type": "string"},
+                "topic":    {"type": "string", "description": "Le nouveau topic en markdown."},
+            },
+            "required": ["threadId", "topic"],
+        },
+    },
+    {
+        "name": "system_create_subthread",
+        "description": (
+            "Ouvre un sub-thread (issue enfant) attaché à un thread parent. Permet à un agent ou orchestrateur "
+            "d'ouvrir une discussion technique parallèle sans polluer le canal principal."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "parentThreadId": {"type": "string", "description": "Thread parent."},
+                "title":          {"type": "string"},
+                "description":    {"type": "string", "description": "Topic initial du sub-thread (devient le pinned)."},
+                "assigneeAgentId":{"type": "string"},
+                "labels":         {"type": "array", "items": {"type": "string"}},
+                "companyId":      {"type": "string"},
+            },
+            "required": ["parentThreadId", "title"],
+        },
+    },
 ]
 
 def handle_tool(name: str, args: dict) -> str:
@@ -220,7 +415,10 @@ def handle_tool(name: str, args: dict) -> str:
     elif name == "ubik_interrupt":
         tab_id  = args["tab_id"]
         message = args["message"]
-        # Ctrl+C interrompt la commande en cours dans le PTY
+        # Real SIGINT to the foreground pgrp (kernel-level) — the raw \x03 byte
+        # alone is ignored when the CLI's stdin is wedged. We still send \x03 as
+        # a safety net for CLIs that handle Ctrl+C themselves in raw mode.
+        http("POST", f"/pty/interrupt/{tab_id}")
         http("POST", "/pty/write", {"tab_id": tab_id, "text": "\x03"})
         time.sleep(0.5)
         if not message.endswith("\r"):
@@ -316,7 +514,304 @@ def handle_tool(name: str, args: dict) -> str:
         else:
             return json.dumps({"agent_id": None, "confidence": 0.0, "reasoning": reasoning, "skills_bias": []})
 
+    elif name == "system_spawn_agent":
+        return _system_spawn_agent(args)
+
+    elif name == "system_send_to_thread":
+        return _system_send_to_thread(args)
+
+    elif name == "system_interrupt_agent":
+        return _system_interrupt_agent(args)
+
+    elif name == "system_stop_agent":
+        return _system_stop_agent(args)
+
+    elif name == "system_list_agents":
+        return _system_list_agents(args)
+
+    elif name == "system_react_to_comment":
+        return _system_react_to_comment(args)
+
+    elif name == "system_set_topic":
+        return _system_set_topic(args)
+
+    elif name == "system_create_subthread":
+        return _system_create_subthread(args)
+
     return f"Outil inconnu: {name}"
+
+
+# ── SYSTEM tool implementations ──────────────────────────────────────────────
+
+def _resolve_company_id(args: dict) -> str | None:
+    cid = args.get("companyId")
+    if cid:
+        return cid
+    try:
+        companies = pc_call("GET", "/companies")
+        if isinstance(companies, list) and companies:
+            return companies[0]["id"]
+    except Exception:
+        pass
+    return None
+
+
+def _system_spawn_agent(args: dict) -> str:
+    name = args.get("name")
+    if not name:
+        return "[error: name required]"
+    company_id = _resolve_company_id(args)
+    if not company_id:
+        return "[error: no Paperclip company found]"
+
+    role = args.get("role") or "engineer"
+    model = args.get("model") or "claude_local"
+    skills = args.get("skills") or []
+    workspace = args.get("workspace")
+    initial_directive = args.get("initialDirective")
+    thread_id = args.get("threadId")
+
+    try:
+        agent_body = {"name": name, "role": role, "adapterType": model, "adapterConfig": {}}
+        if skills:
+            agent_body["desiredSkills"] = skills
+        pc_agent = pc_call("POST", f"/companies/{company_id}/agents", agent_body)
+        agent_id = pc_agent["id"]
+
+        try:
+            pc_call("POST", f"/agents/{agent_id}/pause", {"reason": "system-spawn"})
+        except Exception:
+            pass
+
+        key_resp = pc_call("POST", f"/agents/{agent_id}/keys", {"name": "system-key"})
+        api_key = key_resp.get("token") or key_resp.get("key") or ""
+
+        thread_topic = ""
+        if not thread_id:
+            title = (args.get("title") or initial_directive or name)[:80]
+            issue = pc_call("POST", f"/companies/{company_id}/issues", {
+                "title": title,
+                "description": initial_directive or "",
+                "assigneeAgentId": agent_id,
+            })
+            thread_id = issue["id"]
+            thread_topic = issue.get("description") or ""
+        else:
+            try:
+                existing = pc_call("GET", f"/issues/{thread_id}")
+                thread_topic = existing.get("description") or ""
+            except Exception:
+                thread_topic = ""
+    except urllib.error.HTTPError as e:
+        return f"[error: Paperclip {e.code}: {e.read().decode('utf-8', errors='replace')[:200]}]"
+    except Exception as e:
+        return f"[error: Paperclip wiring: {e}]"
+
+    tab_id = f"system-agent-{agent_id[:8]}"
+    env = {
+        "PAPERCLIP_API_URL": PAPERCLIP_API,
+        "PAPERCLIP_AGENT_ID": agent_id,
+        "PAPERCLIP_COMPANY_ID": company_id,
+        "PAPERCLIP_THREAD_ID": thread_id,
+    }
+    if api_key:
+        env["PAPERCLIP_API_KEY"] = api_key
+    if workspace:
+        env["WORKSPACE_PATH"] = workspace
+    if thread_topic:
+        env["PAPERCLIP_THREAD_TOPIC"] = thread_topic
+
+    # Load the SYSTEM worker manifest (protocole Discord-for-agents).
+    # Falls back gracefully if the manifest is missing — agent will run without conditioning.
+    system_manifest = Path.home() / ".ubik-desktop" / "agents" / "system-worker.md"
+    agent_path = str(system_manifest) if system_manifest.exists() else None
+
+    spawn_body = {
+        "tab_id": tab_id,
+        "rows": 40,
+        "cols": 200,
+        "env": env,
+        "headless": True,
+        "agent": agent_path,
+    }
+    spawn_result = http("POST", "/pty/create", spawn_body)
+    if not spawn_result.get("ok"):
+        try:
+            pc_call("DELETE", f"/agents/{agent_id}")
+        except Exception:
+            pass
+        return f"[error: PTY spawn failed: {spawn_result}]"
+
+    _registry_set(agent_id, {
+        "tabId": tab_id,
+        "threadId": thread_id,
+        "name": name,
+        "workspace": workspace,
+        "spawnedAt": datetime.now(timezone.utc).isoformat(),
+    })
+
+    if initial_directive:
+        time.sleep(1.2)
+        http("POST", "/pty/write", {"tab_id": tab_id, "text": initial_directive + "\r"})
+
+    return json.dumps({
+        "agentId": agent_id,
+        "threadId": thread_id,
+        "tabId": tab_id,
+        "name": name,
+        "workspace": workspace,
+    }, ensure_ascii=False, indent=2)
+
+
+_MENTION_RE = re.compile(r'@([A-Za-z0-9_\-]+)')
+
+
+def _system_send_to_thread(args: dict) -> str:
+    thread_id = args.get("threadId")
+    body = args.get("body")
+    if not thread_id or not body:
+        return "[error: threadId and body required]"
+    author_agent_id = args.get("authorAgentId")
+
+    try:
+        pc_call("POST", f"/issues/{thread_id}/comments", {"body": body})
+    except urllib.error.HTTPError as e:
+        return f"[error: Paperclip add_comment {e.code}: {e.read().decode('utf-8', errors='replace')[:200]}]"
+    except Exception as e:
+        return f"[error: Paperclip add_comment: {e}]"
+
+    attached = _registry_for_thread(thread_id)
+    mentions = set(_MENTION_RE.findall(body))
+    if mentions:
+        targets = {aid: info for aid, info in attached.items() if info.get("name") in mentions}
+        mode = "mentions"
+    else:
+        targets = attached
+        mode = "broadcast"
+
+    woken = []
+    skipped = []
+    for aid, info in targets.items():
+        if author_agent_id and aid == author_agent_id:
+            skipped.append(aid)
+            continue
+        ok = _wake_socket(info["tabId"], body)
+        (woken if ok else skipped).append(aid)
+
+    return json.dumps({
+        "posted": True,
+        "mode": mode,
+        "mentions": sorted(mentions),
+        "woken": woken,
+        "skipped": skipped,
+    }, ensure_ascii=False, indent=2)
+
+
+def _system_interrupt_agent(args: dict) -> str:
+    agent_id = args.get("agentId")
+    if not agent_id:
+        return "[error: agentId required]"
+    info = _registry_load().get(agent_id)
+    if not info:
+        return "[error: agent not in SYSTEM registry]"
+    tab_id = info["tabId"]
+    result = http("POST", f"/pty/interrupt/{tab_id}")
+    if not result.get("ok"):
+        return f"[error: interrupt failed: {result}]"
+    return json.dumps({
+        "interrupted": agent_id,
+        "tabId": tab_id,
+        "pgid": result.get("pgid"),
+        "fallback": result.get("fallback"),
+    }, ensure_ascii=False)
+
+
+def _system_stop_agent(args: dict) -> str:
+    agent_id = args.get("agentId")
+    if not agent_id:
+        return "[error: agentId required]"
+    info = _registry_load().get(agent_id)
+    if not info:
+        return "[error: agent not in SYSTEM registry]"
+    tab_id = info["tabId"]
+    http("DELETE", f"/pty/{tab_id}")
+    _registry_remove(agent_id)
+    return json.dumps({"stopped": agent_id, "tabId": tab_id}, ensure_ascii=False)
+
+
+def _system_list_agents(args: dict) -> str:
+    thread_id = args.get("threadId")
+    reg = _registry_load()
+    if thread_id:
+        reg = {aid: info for aid, info in reg.items() if info.get("threadId") == thread_id}
+    return json.dumps(reg, ensure_ascii=False, indent=2)
+
+
+def _system_react_to_comment(args: dict) -> str:
+    thread_id = args.get("threadId")
+    target_id = args.get("targetCommentId")
+    emoji = args.get("emoji")
+    if not (thread_id and target_id and emoji):
+        return "[error: threadId, targetCommentId, emoji required]"
+    body = f":reaction:{emoji}:{target_id}"
+    try:
+        comment = pc_call("POST", f"/issues/{thread_id}/comments", {"body": body})
+    except urllib.error.HTTPError as e:
+        return f"[error: react failed {e.code}: {e.read().decode('utf-8', errors='replace')[:200]}]"
+    except Exception as e:
+        return f"[error: react failed: {e}]"
+    return json.dumps({"reacted": True, "emoji": emoji, "target": target_id, "commentId": comment.get("id")}, ensure_ascii=False)
+
+
+def _system_set_topic(args: dict) -> str:
+    thread_id = args.get("threadId")
+    topic = args.get("topic")
+    if not (thread_id and topic is not None):
+        return "[error: threadId and topic required]"
+    try:
+        issue = pc_call("PATCH", f"/issues/{thread_id}", {"description": topic})
+    except urllib.error.HTTPError as e:
+        return f"[error: set_topic failed {e.code}: {e.read().decode('utf-8', errors='replace')[:200]}]"
+    except Exception as e:
+        return f"[error: set_topic failed: {e}]"
+
+    # Wake all agents attached to this thread so they pick up the new topic
+    attached = _registry_for_thread(thread_id)
+    payload = f":topic-updated: {topic}"
+    woken = []
+    for aid, info in attached.items():
+        if _wake_socket(info["tabId"], payload):
+            woken.append(aid)
+
+    return json.dumps({"topicUpdated": True, "issueId": issue.get("id"), "wokenAgents": woken}, ensure_ascii=False)
+
+
+def _system_create_subthread(args: dict) -> str:
+    parent_id = args.get("parentThreadId")
+    title = args.get("title")
+    if not (parent_id and title):
+        return "[error: parentThreadId and title required]"
+    company_id = _resolve_company_id(args)
+    if not company_id:
+        return "[error: no Paperclip company found]"
+
+    body = {"title": title, "parentIssueId": parent_id}
+    for k in ("description", "assigneeAgentId", "assigneeUserId", "labels"):
+        v = args.get(k)
+        if v is not None and v != "":
+            body[k] = v
+    try:
+        issue = pc_call("POST", f"/companies/{company_id}/issues", body)
+    except urllib.error.HTTPError as e:
+        return f"[error: create_subthread failed {e.code}: {e.read().decode('utf-8', errors='replace')[:200]}]"
+    except Exception as e:
+        return f"[error: create_subthread failed: {e}]"
+    return json.dumps({
+        "subthreadId": issue.get("id"),
+        "identifier": issue.get("identifier"),
+        "parentThreadId": parent_id,
+        "title": title,
+    }, ensure_ascii=False, indent=2)
 
 # ── MCP stdio protocol ────────────────────────────────────────────────────────
 
