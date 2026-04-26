@@ -127,23 +127,26 @@ TOOLS = [
     {
         "name": "ubik_create_session",
         "description": (
-            "Spawn un worker MCP dans UBIK-DESKTOP, paramétré avec model+skills, et le branche "
-            "automatiquement à un thread Paperclip. Le worker reçoit sa tâche en prompt et reporte "
-            "automatiquement (commentaire à chaque milestone, status=done à la fin, approval si bloqué). "
-            "Si task et/ou model est fourni : crée un agent Paperclip dynamique + un thread, injecte le "
-            "token Bearer + agentId + threadId dans l'env du PTY, et envoie la tâche au worker. "
-            "Si seul tab_id est fourni : ouvre un PTY générique (mode legacy)."
+            "Spawn un agent UBIK (Genie/ubik-cli) dans un terminal visible UBIK-DESKTOP. "
+            "Si 'name' est fourni : crée un agent Paperclip, un thread, injecte les env vars, "
+            "enregistre dans le registre system-agents — l'agent peut recevoir des messages via "
+            "system_send_to_thread. Sans 'name' : PTY générique visible. "
+            "Provider : UBIK / Genie. Pour Claude, utiliser claude_spawn_terminal."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "tab_id":    {"type": "string", "description": "Identifiant unique du terminal (ex: 'mcp-0')"},
-                "agent_id":  {"type": "string", "description": "ID d'un agent persona local (~/.ubik-desktop/agents/{id}.md). Optionnel."},
-                "name":      {"type": "string", "description": "Nom du worker dans Paperclip (ex: 'auth-refactorer'). Si absent, dérivé de tab_id."},
-                "model":     {"type": "string", "description": "Adapter Paperclip (ex: 'claude_local','codex_local','gemini_local','http'). Default 'claude_local'."},
-                "skills":    {"type": "array", "items": {"type": "string"}, "description": "Skills attribués (doivent exister dans la company). Optionnel."},
-                "task":      {"type": "string", "description": "La tâche à confier au worker — devient le prompt initial. Active le mode Paperclip auto."},
-                "thread_id": {"type": "string", "description": "ID d'un thread Paperclip existant à attacher au worker. Si absent et task fourni, un thread est créé."},
+                "tab_id":           {"type": "string", "description": "Identifiant unique du terminal (ex: 'mcp-0')."},
+                "agent_id":         {"type": "string", "description": "ID d'un agent persona local (~/.ubik-desktop/agents/{id}.md). Optionnel."},
+                "name":             {"type": "string", "description": "Nom de l'agent Paperclip (ex: 'ubik-refactor-auth'). Si fourni, active le wiring Paperclip."},
+                "model":            {"type": "string", "description": "Adapter Paperclip (ex: 'claude_local','gemini_local'). Défaut: 'claude_local'."},
+                "role":             {"type": "string", "description": "Rôle Paperclip (défaut: engineer)."},
+                "skills":           {"type": "array", "items": {"type": "string"}, "description": "Skills Paperclip attribués."},
+                "threadId":         {"type": "string", "description": "Thread Paperclip existant à rejoindre. Si absent et name fourni, crée un nouveau thread."},
+                "title":            {"type": "string", "description": "Titre du thread si on en crée un nouveau."},
+                "initialDirective": {"type": "string", "description": "Premier message envoyé à l'agent au démarrage."},
+                "workspace":        {"type": "string", "description": "Répertoire de travail de l'agent."},
+                "companyId":        {"type": "string", "description": "Company UUID. Sinon prend la première company."},
             },
             "required": ["tab_id"],
         },
@@ -215,29 +218,6 @@ TOOLS = [
                 "prompt": {"type": "string", "description": "Le besoin de l'utilisateur à router"},
             },
             "required": ["prompt"],
-        },
-    },
-    {
-        "name": "system_spawn_agent",
-        "description": (
-            "Spawn un agent SYSTEM (UBIK-CLI headless) attaché à un thread Paperclip. "
-            "Crée l'agent côté Paperclip, optionnellement crée un thread, lance un PTY background invisible. "
-            "L'agent reçoit son env (PAPERCLIP_AGENT_ID/THREAD_ID/API_KEY) et peut commenter, reporter, demander des approvals."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "name":             {"type": "string", "description": "Nom de l'agent (ex: 'codex-refactor-auth')."},
-                "threadId":         {"type": "string", "description": "Thread Paperclip existant à rejoindre. Si absent, un nouveau thread est créé."},
-                "title":            {"type": "string", "description": "Titre du thread si on en crée un nouveau."},
-                "role":             {"type": "string", "description": "Rôle Paperclip (default: engineer)."},
-                "model":            {"type": "string", "description": "Adapter Paperclip (default: claude_local)."},
-                "skills":           {"type": "array", "items": {"type": "string"}},
-                "workspace":        {"type": "string", "description": "Path du dossier isolé où l'agent travaille."},
-                "initialDirective": {"type": "string", "description": "Premier message à envoyer à l'agent au démarrage."},
-                "companyId":        {"type": "string", "description": "Company UUID. Sinon prend la première company."},
-            },
-            "required": ["name"],
         },
     },
     {
@@ -344,6 +324,119 @@ TOOLS = [
             "required": ["parentThreadId", "title"],
         },
     },
+    # ── Claude CLI terminals ──────────────────────────────────────────────────
+    {
+        "name": "claude_spawn_terminal",
+        "description": (
+            "Ouvre un terminal Claude CLI interactif dans UBIK-DESKTOP. "
+            "Le terminal apparaît dans une fenêtre MCP dédiée avec XTerm. "
+            "Claude tourne avec --dangerously-skip-permissions (auto-approve). "
+            "Attend que Claude soit prêt (prompt ❯ visible) avant de retourner. "
+            "Si 'name' est fourni : crée un agent Paperclip, un thread, injecte les env vars, "
+            "enregistre dans le registre system-agents — l'agent peut recevoir des messages via "
+            "system_send_to_thread. "
+            "Provider : Claude CLI. Pour UBIK/Genie, utiliser ubik_create_session."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tab_id":           {"type": "string", "description": "Identifiant unique du terminal (ex: 'claude-0'). Préfixe 'claude-' recommandé."},
+                "cwd":              {"type": "string", "description": "Répertoire de travail initial. Optionnel."},
+                "rows":             {"type": "integer", "description": "Hauteur du terminal (défaut: 40)"},
+                "cols":             {"type": "integer", "description": "Largeur du terminal (défaut: 220)"},
+                "initial_prompt":   {"type": "string", "description": "Prompt à envoyer dès que Claude est prêt. Optionnel (sans wiring Paperclip)."},
+                "name":             {"type": "string", "description": "Nom de l'agent Paperclip (ex: 'claude-architecte'). Si fourni, active le wiring Paperclip."},
+                "model":            {"type": "string", "description": "Adapter Paperclip (défaut: 'claude_local')."},
+                "role":             {"type": "string", "description": "Rôle Paperclip (défaut: engineer)."},
+                "skills":           {"type": "array", "items": {"type": "string"}, "description": "Skills Paperclip attribués."},
+                "threadId":         {"type": "string", "description": "Thread Paperclip existant à rejoindre. Si absent et name fourni, crée un nouveau thread."},
+                "title":            {"type": "string", "description": "Titre du thread si on en crée un nouveau."},
+                "initialDirective": {"type": "string", "description": "Premier message envoyé à Claude au démarrage (wiring Paperclip). Prioritaire sur initial_prompt."},
+                "workspace":        {"type": "string", "description": "Répertoire de travail (wiring Paperclip, prioritaire sur cwd)."},
+                "companyId":        {"type": "string", "description": "Company UUID. Sinon prend la première company."},
+            },
+            "required": ["tab_id"],
+        },
+    },
+    {
+        "name": "claude_run_task",
+        "description": (
+            "Lance Claude CLI en mode headless (--print) pour exécuter une tâche en une passe. "
+            "Le terminal est headless (pas de fenêtre MCP). "
+            "Utilise claude_read pour récupérer la réponse."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tab_id":  {"type": "string", "description": "Identifiant unique du terminal."},
+                "prompt":  {"type": "string", "description": "La tâche à confier à Claude."},
+                "cwd":     {"type": "string", "description": "Répertoire de travail (optionnel)."},
+            },
+            "required": ["tab_id", "prompt"],
+        },
+    },
+    {
+        "name": "claude_list_terminals",
+        "description": "Liste les sessions Claude CLI actives dans UBIK-DESKTOP (tab_id préfixés par 'claude-').",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "claude_write",
+        "description": (
+            "Envoie du texte à un terminal Claude CLI (claude_spawn_terminal). "
+            "Ajoute \\r automatiquement. Utilise claude_read après pour récupérer la réponse."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "string"},
+                "text":   {"type": "string", "description": "Texte ou prompt à envoyer"},
+            },
+            "required": ["tab_id", "text"],
+        },
+    },
+    {
+        "name": "claude_read",
+        "description": (
+            "Lit et vide le buffer de sortie d'un terminal Claude CLI. "
+            "Attends 3-5s après claude_write pour laisser Claude répondre. "
+            "Strip les codes ANSI automatiquement."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "string"},
+            },
+            "required": ["tab_id"],
+        },
+    },
+    {
+        "name": "claude_interrupt",
+        "description": (
+            "Interrompt la commande en cours dans un terminal Claude CLI (Ctrl+C PTY), "
+            "puis injecte un message de redirection. "
+            "À utiliser quand Claude dévie, boucle, ou doit recevoir une nouvelle directive immédiatement."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tab_id":  {"type": "string"},
+                "message": {"type": "string", "description": "Instructions de redirection envoyées après l'interruption"},
+            },
+            "required": ["tab_id", "message"],
+        },
+    },
+    {
+        "name": "claude_kill",
+        "description": "Ferme et supprime une session terminal Claude CLI.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tab_id": {"type": "string"},
+            },
+            "required": ["tab_id"],
+        },
+    },
 ]
 
 def handle_tool(name: str, args: dict) -> str:
@@ -361,35 +454,48 @@ def handle_tool(name: str, args: dict) -> str:
         return str(sessions)
 
     elif name == "ubik_create_session":
-        tab_id   = args["tab_id"]
-        agent_id = args.get("agent_id")
+        tab_id = args["tab_id"]
+        agent_manifest = args.get("agent_id")
         agents_dir = Path.home() / ".ubik-desktop" / "agents"
-        agent_path = str(agents_dir / f"{agent_id}.md") if agent_id else None
+        agent_path = str(agents_dir / f"{agent_manifest}.md") if agent_manifest else None
 
-        # ── Plain spawn (Paperclip wiring removed — isolation test) ─────────
-        worker_name = args.get("name") or f"worker-{tab_id}"
-        task = args.get("task")
+        env = {}
+        pc_agent_id = None
+        pc_thread_id = None
+
+        if args.get("name"):
+            try:
+                pc_agent_id, pc_thread_id, env = _paperclip_wire(args, tab_id)
+            except (ValueError, urllib.error.HTTPError) as e:
+                return f"[error: Paperclip wiring: {e}]"
 
         body = {
             "tab_id": tab_id,
             "rows": 40,
             "cols": 200,
             "agent": agent_path,
-            "env": {},
+            "headless": False,
+            "env": env,
         }
         result = http("POST", "/pty/create", body)
         if not result.get("ok"):
-            return f"Erreur spawn: {result}"
+            if pc_agent_id:
+                try:
+                    pc_call("DELETE", f"/agents/{pc_agent_id}")
+                except Exception:
+                    pass
+            return f"[error: PTY spawn failed: {result}]"
 
-        if task:
-            time.sleep(0.5)
-            http("POST", "/pty/write", {"tab_id": tab_id, "text": task + "\r"})
+        initial_directive = args.get("initialDirective")
+        if initial_directive:
+            time.sleep(1.2)
+            http("POST", "/pty/write", {"tab_id": tab_id, "text": initial_directive + "\r"})
 
-        summary = {
-            "tab_id": tab_id,
-            "worker_name": worker_name,
-            "task_dispatched": bool(task),
-        }
+        summary: dict = {"tab_id": tab_id, "status": "terminal ouvert"}
+        if pc_agent_id:
+            summary["agentId"] = pc_agent_id
+            summary["threadId"] = pc_thread_id
+            summary["name"] = args.get("name")
         return json.dumps(summary, ensure_ascii=False, indent=2)
 
     elif name == "ubik_write":
@@ -514,9 +620,6 @@ def handle_tool(name: str, args: dict) -> str:
         else:
             return json.dumps({"agent_id": None, "confidence": 0.0, "reasoning": reasoning, "skills_bias": []})
 
-    elif name == "system_spawn_agent":
-        return _system_spawn_agent(args)
-
     elif name == "system_send_to_thread":
         return _system_send_to_thread(args)
 
@@ -538,31 +641,168 @@ def handle_tool(name: str, args: dict) -> str:
     elif name == "system_create_subthread":
         return _system_create_subthread(args)
 
+    elif name == "claude_spawn_terminal":
+        tab_id = args["tab_id"]
+        env = {}
+        cwd = args.get("workspace") or args.get("cwd")
+        if cwd:
+            env["PWD"] = cwd
+
+        pc_agent_id = None
+        pc_thread_id = None
+
+        if args.get("name"):
+            try:
+                pc_agent_id, pc_thread_id, pc_env = _paperclip_wire(args, tab_id)
+                env.update(pc_env)
+            except (ValueError, urllib.error.HTTPError) as e:
+                return f"[error: Paperclip wiring: {e}]"
+
+        body = {
+            "tab_id": tab_id,
+            "rows": args.get("rows", 40),
+            "cols": args.get("cols", 220),
+            "cli_mode": "claude",
+            "env": env,
+            "headless": False,
+        }
+        result = http("POST", "/pty/create", body)
+        if not result.get("ok"):
+            if pc_agent_id:
+                try:
+                    pc_call("DELETE", f"/agents/{pc_agent_id}")
+                except Exception:
+                    pass
+            return f"[error: spawn Claude: {result}]"
+
+        if cwd:
+            time.sleep(0.3)
+            http("POST", "/pty/write", {"tab_id": tab_id, "text": f"cd {cwd}\r"})
+
+        import re as _re
+        ansi_escape = _re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        deadline = time.time() + 20
+        ready = False
+        while time.time() < deadline:
+            time.sleep(0.5)
+            buf = ansi_escape.sub('', http("GET", f"/pty/read/{tab_id}").get("output", ""))
+            # Auto-confirm the workspace trust dialog
+            if "trust" in buf.lower() and "Yes, I trust" in buf:
+                http("POST", "/pty/write", {"tab_id": tab_id, "text": "\r"})
+                continue
+            if "❯" in buf or "> " in buf:
+                ready = True
+                break
+
+        if not ready:
+            summary = {"tab_id": tab_id, "pid": result.get("pid"), "status": "terminal ouvert (timeout init)"}
+            if pc_agent_id:
+                summary["agentId"] = pc_agent_id
+                summary["threadId"] = pc_thread_id
+            return json.dumps(summary)
+
+        first_message = args.get("initialDirective") or args.get("initial_prompt")
+        if first_message:
+            text = first_message if first_message.endswith("\r") else first_message + "\r"
+            http("POST", "/pty/write", {"tab_id": tab_id, "text": text})
+
+        summary = {"tab_id": tab_id, "pid": result.get("pid"), "status": "terminal prêt"}
+        if pc_agent_id:
+            summary["agentId"] = pc_agent_id
+            summary["threadId"] = pc_thread_id
+            summary["name"] = args.get("name")
+        return json.dumps(summary, ensure_ascii=False)
+
+    elif name == "claude_run_task":
+        tab_id  = args["tab_id"]
+        prompt  = args["prompt"]
+        env = {}
+        if cwd := args.get("cwd"):
+            env["PWD"] = cwd
+        body = {
+            "tab_id": tab_id,
+            "rows": 40,
+            "cols": 220,
+            "cli_mode": "claude",
+            "env": env,
+            "headless": True,
+        }
+        result = http("POST", "/pty/create", body)
+        if not result.get("ok"):
+            return f"Erreur spawn Claude: {result}"
+        # cd first if cwd provided, then send the prompt in print mode
+        if cwd := args.get("cwd"):
+            time.sleep(0.2)
+            http("POST", "/pty/write", {"tab_id": tab_id, "text": f"cd {cwd}\r"})
+            time.sleep(0.2)
+        # Pass the prompt as a -p flag via shell
+        escaped = prompt.replace("'", "'\\''")
+        http("POST", "/pty/write", {"tab_id": tab_id, "text": f"claude -p '{escaped}'\r"})
+        return json.dumps({"tab_id": tab_id, "pid": result.get("pid"), "status": "tâche lancée — utilise claude_read pour la réponse"})
+
+    elif name == "claude_list_terminals":
+        sessions = http("GET", "/pty/sessions")
+        if isinstance(sessions, list):
+            claude_sessions = [s for s in sessions if s.startswith("claude")]
+            return "\n".join(claude_sessions) if claude_sessions else "Aucun terminal Claude actif."
+        return str(sessions)
+
+    elif name == "claude_write":
+        tab_id = args["tab_id"]
+        text   = args["text"]
+        # Strip trailing \r — we'll send it as a separate write after a delay
+        # so Claude CLI doesn't absorb it into the paste buffer
+        text = text.rstrip("\r")
+        http("POST", "/pty/write", {"tab_id": tab_id, "text": text})
+        time.sleep(0.15)
+        result = http("POST", "/pty/write", {"tab_id": tab_id, "text": "\r"})
+        return "Envoyé." if result.get("ok") else f"Erreur: {result}"
+
+    elif name == "claude_read":
+        tab_id = args["tab_id"]
+        result = http("GET", f"/pty/read/{tab_id}")
+        output = result.get("output", "")
+        if not output:
+            return "(buffer vide — Claude n'a peut-être pas encore répondu)"
+        clean = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]', '', output)
+        clean = re.sub(r'\x1b\][^\x07]*\x07', '', clean)
+        clean = clean.replace('\r\n', '\n').replace('\r', '')
+        return clean.strip()
+
+    elif name == "claude_interrupt":
+        tab_id  = args["tab_id"]
+        message = args["message"]
+        http("POST", f"/pty/interrupt/{tab_id}")
+        http("POST", "/pty/write", {"tab_id": tab_id, "text": "\x03"})
+        time.sleep(0.5)
+        if not message.endswith("\r"):
+            message += "\r"
+        result = http("POST", "/pty/write", {"tab_id": tab_id, "text": message})
+        return "Interrompu et redirigé." if result.get("ok") else f"Erreur: {result}"
+
+    elif name == "claude_kill":
+        tab_id = args["tab_id"]
+        result = http("DELETE", f"/pty/{tab_id}")
+        return f"Terminal Claude '{tab_id}' fermé." if result.get("ok") else f"Erreur: {result}"
+
     return f"Outil inconnu: {name}"
 
 
 # ── SYSTEM tool implementations ──────────────────────────────────────────────
 
-def _resolve_company_id(args: dict) -> str | None:
-    cid = args.get("companyId")
-    if cid:
-        return cid
-    try:
-        companies = pc_call("GET", "/companies")
-        if isinstance(companies, list) and companies:
-            return companies[0]["id"]
-    except Exception:
-        pass
-    return None
+def _paperclip_wire(args: dict, tab_id: str) -> tuple[str | None, str | None, dict]:
+    """Create Paperclip agent + thread + API key for a terminal agent.
 
-
-def _system_spawn_agent(args: dict) -> str:
+    Returns (agent_id, thread_id, env_vars). Returns (None, None, {}) if name absent.
+    Raises ValueError on Paperclip errors.
+    """
     name = args.get("name")
     if not name:
-        return "[error: name required]"
+        return None, None, {}
+
     company_id = _resolve_company_id(args)
     if not company_id:
-        return "[error: no Paperclip company found]"
+        raise ValueError("no Paperclip company found")
 
     role = args.get("role") or "engineer"
     model = args.get("model") or "claude_local"
@@ -571,43 +811,37 @@ def _system_spawn_agent(args: dict) -> str:
     initial_directive = args.get("initialDirective")
     thread_id = args.get("threadId")
 
+    agent_body = {"name": name, "role": role, "adapterType": model, "adapterConfig": {}}
+    if skills:
+        agent_body["desiredSkills"] = skills
+    pc_agent = pc_call("POST", f"/companies/{company_id}/agents", agent_body)
+    agent_id = pc_agent["id"]
+
     try:
-        agent_body = {"name": name, "role": role, "adapterType": model, "adapterConfig": {}}
-        if skills:
-            agent_body["desiredSkills"] = skills
-        pc_agent = pc_call("POST", f"/companies/{company_id}/agents", agent_body)
-        agent_id = pc_agent["id"]
+        pc_call("POST", f"/agents/{agent_id}/pause", {"reason": "system-spawn"})
+    except Exception:
+        pass
 
+    key_resp = pc_call("POST", f"/agents/{agent_id}/keys", {"name": "system-key"})
+    api_key = key_resp.get("token") or key_resp.get("key") or ""
+
+    thread_topic = ""
+    if not thread_id:
+        title = (args.get("title") or initial_directive or name)[:80]
+        issue = pc_call("POST", f"/companies/{company_id}/issues", {
+            "title": title,
+            "description": initial_directive or "",
+            "assigneeAgentId": agent_id,
+        })
+        thread_id = issue["id"]
+        thread_topic = issue.get("description") or ""
+    else:
         try:
-            pc_call("POST", f"/agents/{agent_id}/pause", {"reason": "system-spawn"})
+            existing = pc_call("GET", f"/issues/{thread_id}")
+            thread_topic = existing.get("description") or ""
         except Exception:
-            pass
+            thread_topic = ""
 
-        key_resp = pc_call("POST", f"/agents/{agent_id}/keys", {"name": "system-key"})
-        api_key = key_resp.get("token") or key_resp.get("key") or ""
-
-        thread_topic = ""
-        if not thread_id:
-            title = (args.get("title") or initial_directive or name)[:80]
-            issue = pc_call("POST", f"/companies/{company_id}/issues", {
-                "title": title,
-                "description": initial_directive or "",
-                "assigneeAgentId": agent_id,
-            })
-            thread_id = issue["id"]
-            thread_topic = issue.get("description") or ""
-        else:
-            try:
-                existing = pc_call("GET", f"/issues/{thread_id}")
-                thread_topic = existing.get("description") or ""
-            except Exception:
-                thread_topic = ""
-    except urllib.error.HTTPError as e:
-        return f"[error: Paperclip {e.code}: {e.read().decode('utf-8', errors='replace')[:200]}]"
-    except Exception as e:
-        return f"[error: Paperclip wiring: {e}]"
-
-    tab_id = f"system-agent-{agent_id[:8]}"
     env = {
         "PAPERCLIP_API_URL": PAPERCLIP_API,
         "PAPERCLIP_AGENT_ID": agent_id,
@@ -621,27 +855,6 @@ def _system_spawn_agent(args: dict) -> str:
     if thread_topic:
         env["PAPERCLIP_THREAD_TOPIC"] = thread_topic
 
-    # Load the SYSTEM worker manifest (protocole Discord-for-agents).
-    # Falls back gracefully if the manifest is missing — agent will run without conditioning.
-    system_manifest = Path.home() / ".ubik-desktop" / "agents" / "system-worker.md"
-    agent_path = str(system_manifest) if system_manifest.exists() else None
-
-    spawn_body = {
-        "tab_id": tab_id,
-        "rows": 40,
-        "cols": 200,
-        "env": env,
-        "headless": True,
-        "agent": agent_path,
-    }
-    spawn_result = http("POST", "/pty/create", spawn_body)
-    if not spawn_result.get("ok"):
-        try:
-            pc_call("DELETE", f"/agents/{agent_id}")
-        except Exception:
-            pass
-        return f"[error: PTY spawn failed: {spawn_result}]"
-
     _registry_set(agent_id, {
         "tabId": tab_id,
         "threadId": thread_id,
@@ -650,17 +863,20 @@ def _system_spawn_agent(args: dict) -> str:
         "spawnedAt": datetime.now(timezone.utc).isoformat(),
     })
 
-    if initial_directive:
-        time.sleep(1.2)
-        http("POST", "/pty/write", {"tab_id": tab_id, "text": initial_directive + "\r"})
+    return agent_id, thread_id, env
 
-    return json.dumps({
-        "agentId": agent_id,
-        "threadId": thread_id,
-        "tabId": tab_id,
-        "name": name,
-        "workspace": workspace,
-    }, ensure_ascii=False, indent=2)
+
+def _resolve_company_id(args: dict) -> str | None:
+    cid = args.get("companyId")
+    if cid:
+        return cid
+    try:
+        companies = pc_call("GET", "/companies")
+        if isinstance(companies, list) and companies:
+            return companies[0]["id"]
+    except Exception:
+        pass
+    return None
 
 
 _MENTION_RE = re.compile(r'@([A-Za-z0-9_\-]+)')
@@ -680,6 +896,15 @@ def _system_send_to_thread(args: dict) -> str:
     except Exception as e:
         return f"[error: Paperclip add_comment: {e}]"
 
+    # Resolve author display name for the wake payload prefix.
+    author_name = args.get("authorName")
+    if not author_name and author_agent_id:
+        reg = _registry_load()
+        author_name = reg.get(author_agent_id, {}).get("name") or author_agent_id[:8]
+    if not author_name:
+        author_name = "Human"
+    wake_payload = f"[{author_name}] : {body}"
+
     attached = _registry_for_thread(thread_id)
     mentions = set(_MENTION_RE.findall(body))
     if mentions:
@@ -695,7 +920,7 @@ def _system_send_to_thread(args: dict) -> str:
         if author_agent_id and aid == author_agent_id:
             skipped.append(aid)
             continue
-        ok = _wake_socket(info["tabId"], body)
+        ok = _wake_socket(info["tabId"], wake_payload)
         (woken if ok else skipped).append(aid)
 
     return json.dumps({
