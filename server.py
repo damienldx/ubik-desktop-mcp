@@ -40,6 +40,17 @@ STOPWORDS = {
     "own", "same", "so", "than", "too", "very", "can", "will", "just", "should", "now"
 }
 
+def _nvm_path_env() -> dict:
+    """Inject nvm node bin into PATH so gemini/codex/npx are findable in spawned PTYs."""
+    import glob as _glob
+    nvm_bins = sorted(_glob.glob(str(Path.home() / ".config/nvm/versions/node/*/bin")), reverse=True)
+    if not nvm_bins:
+        nvm_bins = sorted(_glob.glob(str(Path.home() / ".nvm/versions/node/*/bin")), reverse=True)
+    if not nvm_bins:
+        return {}
+    current_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    return {"PATH": f"{nvm_bins[0]}:{current_path}"}
+
 def http(method: str, path: str, body: dict | None = None) -> Any:
     data = json.dumps(body).encode() if body else None
     req = urllib.request.Request(
@@ -676,6 +687,7 @@ def handle_tool(name: str, args: dict) -> str:
     elif name == "claude_spawn_terminal":
         tab_id = args["tab_id"]
         env = {}
+        env.update(_nvm_path_env())
         cwd = args.get("workspace") or args.get("cwd")
         if cwd:
             env["PWD"] = cwd
@@ -869,6 +881,8 @@ def _ubik_create_session(args: dict) -> str:
         except (ValueError, urllib.error.HTTPError) as e:
             return f"[error: Paperclip wiring: {e}]"
 
+    env.update(_nvm_path_env())
+
     body = {
         "tab_id": tab_id,
         "rows": 40,
@@ -912,10 +926,10 @@ def _ubik_create_session(args: dict) -> str:
 
 
 def _paperclip_wire(args: dict, tab_id: str) -> tuple[str | None, str | None, dict]:
-    """Create Paperclip agent + thread + API key for a terminal agent.
+    """Register agent + thread in ubik-threads local backend.
 
     Returns (agent_id, thread_id, env_vars). Returns (None, None, {}) if name absent.
-    Raises ValueError on Paperclip errors.
+    Raises ValueError on errors.
     """
     name = args.get("name")
     if not name:
@@ -923,7 +937,7 @@ def _paperclip_wire(args: dict, tab_id: str) -> tuple[str | None, str | None, di
 
     company_id = _resolve_company_id(args)
     if not company_id:
-        raise ValueError("no Paperclip company found")
+        raise ValueError("no company found — is ubik-threads running on :3100?")
 
     role = args.get("role") or "engineer"
     model = args.get("model") or "claude_local"
@@ -937,14 +951,6 @@ def _paperclip_wire(args: dict, tab_id: str) -> tuple[str | None, str | None, di
         agent_body["desiredSkills"] = skills
     pc_agent = pc_call("POST", f"/companies/{company_id}/agents", agent_body)
     agent_id = pc_agent["id"]
-
-    try:
-        pc_call("POST", f"/agents/{agent_id}/pause", {"reason": "system-spawn"})
-    except Exception:
-        pass
-
-    key_resp = pc_call("POST", f"/agents/{agent_id}/keys", {"name": "system-key"})
-    api_key = key_resp.get("token") or key_resp.get("key") or ""
 
     thread_topic = ""
     if not thread_id:
@@ -969,8 +975,6 @@ def _paperclip_wire(args: dict, tab_id: str) -> tuple[str | None, str | None, di
         "PAPERCLIP_COMPANY_ID": company_id,
         "PAPERCLIP_THREAD_ID": thread_id,
     }
-    if api_key:
-        env["PAPERCLIP_API_KEY"] = api_key
     if workspace:
         env["WORKSPACE_PATH"] = workspace
     if thread_topic:
