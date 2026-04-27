@@ -2,8 +2,10 @@
 """MCP server — UBIK-DESKTOP bridge (port 7891)"""
 
 import json
+import os
 import socket
 import sys
+import threading
 import time
 import urllib.request
 import urllib.error
@@ -17,6 +19,8 @@ BASE = "http://127.0.0.1:7891"
 PAPERCLIP_API = "http://127.0.0.1:3100/api"
 SYSTEM_REGISTRY = Path.home() / ".ubik-desktop" / "system-agents.json"
 SOCKETS_DIR = Path.home() / ".ubik-desktop" / "sockets"
+# PTY-based agents (Claude CLI) use wakeup/ so write_to_smart doesn't intercept
+WAKEUP_DIR  = Path.home() / ".ubik-desktop" / "wakeup"
 
 # Stopwords pour éviter la pollution du matching (FR + EN)
 STOPWORDS = {
@@ -101,7 +105,7 @@ def _registry_for_thread(thread_id: str) -> dict[str, dict]:
 
 def _wake_socket(tab_id: str, payload: str) -> bool:
     """Atomic write to ubik-cli socket — interrupts prompt_toolkit via _MCPWake."""
-    sock_path = SOCKETS_DIR / f"{tab_id}.sock"
+    sock_path = WAKEUP_DIR / f"{tab_id}.sock"
     if not sock_path.exists():
         return False
     try:
@@ -112,6 +116,76 @@ def _wake_socket(tab_id: str, payload: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _pre_trust_workspace(workspace: str) -> None:
+    """Write hasTrustDialogAccepted=True for workspace into ~/.claude.json so
+    Claude CLI skips the interactive trust dialog at startup."""
+    claude_json = Path.home() / ".claude.json"
+    try:
+        with open(claude_json) as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        data = {}
+    projects = data.setdefault("projects", {})
+    projects.setdefault(workspace, {})["hasTrustDialogAccepted"] = True
+    with open(claude_json, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def _start_socket_listener(tab_id: str) -> None:
+    """Start a daemon thread that listens on ~/.ubik-desktop/wakeup/{tab_id}.sock.
+    Uses wakeup/ (not sockets/) so write_to_smart in Rust does NOT intercept
+    regular PTY writes, preventing the infinite-loop regression.
+    wake_thread_agents in paperclip.rs checks wakeup/ first.
+    """
+    WAKEUP_DIR.mkdir(parents=True, exist_ok=True)
+    sock_path = str(WAKEUP_DIR / f"{tab_id}.sock")
+
+    try:
+        os.unlink(sock_path)
+    except FileNotFoundError:
+        pass
+
+    def _listen() -> None:
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            srv.bind(sock_path)
+            srv.listen(5)
+            srv.settimeout(1.0)
+        except Exception:
+            return
+        try:
+            while True:
+                try:
+                    conn, _ = srv.accept()
+                except socket.timeout:
+                    continue
+                except Exception:
+                    break
+                try:
+                    chunks: list[bytes] = []
+                    while True:
+                        data = conn.recv(4096)
+                        if not data:
+                            break
+                        chunks.append(data)
+                    msg = b"".join(chunks).decode("utf-8", errors="replace").strip()
+                    if msg:
+                        http("POST", "/pty/write", {"tab_id": tab_id, "text": msg + "\r"})
+                except Exception:
+                    pass
+                finally:
+                    conn.close()
+        finally:
+            srv.close()
+            try:
+                os.unlink(sock_path)
+            except Exception:
+                pass
+
+    threading.Thread(target=_listen, daemon=True, name=f"sock-{tab_id}").start()
+
 
 TOOLS = [
     {
@@ -454,49 +528,7 @@ def handle_tool(name: str, args: dict) -> str:
         return str(sessions)
 
     elif name == "ubik_create_session":
-        tab_id = args["tab_id"]
-        agent_manifest = args.get("agent_id")
-        agents_dir = Path.home() / ".ubik-desktop" / "agents"
-        agent_path = str(agents_dir / f"{agent_manifest}.md") if agent_manifest else None
-
-        env = {}
-        pc_agent_id = None
-        pc_thread_id = None
-
-        if args.get("name"):
-            try:
-                pc_agent_id, pc_thread_id, env = _paperclip_wire(args, tab_id)
-            except (ValueError, urllib.error.HTTPError) as e:
-                return f"[error: Paperclip wiring: {e}]"
-
-        body = {
-            "tab_id": tab_id,
-            "rows": 40,
-            "cols": 200,
-            "agent": agent_path,
-            "headless": False,
-            "env": env,
-        }
-        result = http("POST", "/pty/create", body)
-        if not result.get("ok"):
-            if pc_agent_id:
-                try:
-                    pc_call("DELETE", f"/agents/{pc_agent_id}")
-                except Exception:
-                    pass
-            return f"[error: PTY spawn failed: {result}]"
-
-        initial_directive = args.get("initialDirective")
-        if initial_directive:
-            time.sleep(1.2)
-            http("POST", "/pty/write", {"tab_id": tab_id, "text": initial_directive + "\r"})
-
-        summary: dict = {"tab_id": tab_id, "status": "terminal ouvert"}
-        if pc_agent_id:
-            summary["agentId"] = pc_agent_id
-            summary["threadId"] = pc_thread_id
-            summary["name"] = args.get("name")
-        return json.dumps(summary, ensure_ascii=False, indent=2)
+        return _ubik_create_session(args)
 
     elif name == "ubik_write":
         tab_id = args["tab_id"]
@@ -658,6 +690,9 @@ def handle_tool(name: str, args: dict) -> str:
             except (ValueError, urllib.error.HTTPError) as e:
                 return f"[error: Paperclip wiring: {e}]"
 
+        # Pre-trust the workspace so Claude CLI skips the interactive trust dialog
+        _pre_trust_workspace(cwd or str(Path.home()))
+
         body = {
             "tab_id": tab_id,
             "rows": args.get("rows", 40),
@@ -675,6 +710,8 @@ def handle_tool(name: str, args: dict) -> str:
                     pass
             return f"[error: spawn Claude: {result}]"
 
+        _start_socket_listener(tab_id)
+
         if cwd:
             time.sleep(0.3)
             http("POST", "/pty/write", {"tab_id": tab_id, "text": f"cd {cwd}\r"})
@@ -686,8 +723,8 @@ def handle_tool(name: str, args: dict) -> str:
         while time.time() < deadline:
             time.sleep(0.5)
             buf = ansi_escape.sub('', http("GET", f"/pty/read/{tab_id}").get("output", ""))
-            # Auto-confirm the workspace trust dialog
-            if "trust" in buf.lower() and "Yes, I trust" in buf:
+            # Auto-confirm the workspace trust dialog (PTY may strip spaces)
+            if "trust" in buf.lower() and ("Yes, I trust" in buf or "Yes,Itrust" in buf or "Yes,\xa0I" in buf):
                 http("POST", "/pty/write", {"tab_id": tab_id, "text": "\r"})
                 continue
             if "❯" in buf or "> " in buf:
@@ -790,6 +827,90 @@ def handle_tool(name: str, args: dict) -> str:
 
 # ── SYSTEM tool implementations ──────────────────────────────────────────────
 
+def _ubik_list_sessions(args: dict) -> str:
+    sessions = http("GET", "/pty/sessions")
+    if isinstance(sessions, list):
+        return "\n".join(sessions) if sessions else "Aucune session active."
+    return str(sessions)
+
+def _ubik_read(args: dict) -> str:
+    tab_id = args["tab_id"]
+    result = http("GET", f"/pty/read/{tab_id}")
+    output = result.get("output", "")
+    if not output:
+        return "(buffer vide)"
+    clean = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]', '', output)
+    clean = re.sub(r'\x1b\][^\x07]*\x07', '', clean)
+    clean = clean.replace('\r\n', '\n').replace('\r', '')
+    return clean.strip()
+
+def _ubik_write(args: dict) -> str:
+    tab_id = args["tab_id"]
+    text = args["text"]
+    if not text.endswith("\r"):
+        text += "\r"
+    result = http("POST", "/pty/write", {"tab_id": tab_id, "text": text})
+    return "Envoyé." if result.get("ok") else f"Erreur: {result}"
+
+
+def _ubik_create_session(args: dict) -> str:
+    tab_id = args["tab_id"]
+    agent_manifest = args.get("agent_id")
+    agents_dir = Path.home() / ".ubik-desktop" / "agents"
+    agent_path = str(agents_dir / f"{agent_manifest}.md") if agent_manifest else None
+
+    env = {}
+    pc_agent_id = None
+    pc_thread_id = None
+
+    if args.get("name"):
+        try:
+            pc_agent_id, pc_thread_id, env = _paperclip_wire(args, tab_id)
+        except (ValueError, urllib.error.HTTPError) as e:
+            return f"[error: Paperclip wiring: {e}]"
+
+    body = {
+        "tab_id": tab_id,
+        "rows": 40,
+        "cols": 200,
+        "agent": agent_path,
+        "headless": False,
+        "env": env,
+    }
+    result = http("POST", "/pty/create", body)
+    if not result.get("ok"):
+        if pc_agent_id:
+            try:
+                pc_call("DELETE", f"/agents/{pc_agent_id}")
+            except Exception:
+                pass
+        return f"[error: PTY spawn failed: {result}]"
+
+    _start_socket_listener(tab_id)
+
+    initial_directive = args.get("initialDirective")
+    if initial_directive:
+        # Wait for ubik-cli to be ready before sending the directive
+        _ansi = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+        deadline = time.time() + 20
+        ready = False
+        while time.time() < deadline:
+            time.sleep(0.4)
+            buf = _ansi.sub('', http("GET", f"/pty/read/{tab_id}").get("output", ""))
+            if "Ready." in buf:
+                ready = True
+                break
+        if ready:
+            http("POST", "/pty/write", {"tab_id": tab_id, "text": initial_directive + "\r"})
+
+    summary: dict = {"tab_id": tab_id, "status": "terminal ouvert"}
+    if pc_agent_id:
+        summary["agentId"] = pc_agent_id
+        summary["threadId"] = pc_thread_id
+        summary["name"] = args.get("name")
+    return json.dumps(summary, ensure_ascii=False, indent=2)
+
+
 def _paperclip_wire(args: dict, tab_id: str) -> tuple[str | None, str | None, dict]:
     """Create Paperclip agent + thread + API key for a terminal agent.
 
@@ -889,8 +1010,11 @@ def _system_send_to_thread(args: dict) -> str:
         return "[error: threadId and body required]"
     author_agent_id = args.get("authorAgentId")
 
+    comment_payload: dict = {"body": body}
+    if author_agent_id:
+        comment_payload["authorAgentId"] = author_agent_id
     try:
-        pc_call("POST", f"/issues/{thread_id}/comments", {"body": body})
+        pc_call("POST", f"/issues/{thread_id}/comments", comment_payload)
     except urllib.error.HTTPError as e:
         return f"[error: Paperclip add_comment {e.code}: {e.read().decode('utf-8', errors='replace')[:200]}]"
     except Exception as e:
