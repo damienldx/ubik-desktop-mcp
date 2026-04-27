@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """MCP server — UBIK-DESKTOP bridge (port 7891)"""
 
+import http.client as _http_client
 import json
 import os
 import socket
@@ -9,6 +10,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 import yaml
 import re
 from datetime import datetime, timezone
@@ -196,6 +198,74 @@ def _start_socket_listener(tab_id: str) -> None:
                 pass
 
     threading.Thread(target=_listen, daemon=True, name=f"sock-{tab_id}").start()
+
+
+def _start_sse_listener(tab_id: str, thread_id: str, own_agent_id: str | None = None) -> None:
+    """Subscribe to SSE stream for a thread and forward new messages to the agent's PTY.
+
+    Filters out the agent's own comments (via authorAgentId) to avoid self-loops.
+    Reconnects automatically on connection failure (60s backoff cap).
+    """
+    def _listen() -> None:
+        backoff = 2.0
+        path = f"/api/events/stream?threadId={urllib.parse.quote(thread_id)}"
+        host = "127.0.0.1"
+        port = 3100
+        while True:
+            conn: "_http_client.HTTPConnection | None" = None
+            try:
+                conn = _http_client.HTTPConnection(host, port, timeout=60)
+                conn.request("GET", path, headers={"Accept": "text/event-stream", "Cache-Control": "no-cache"})
+                resp = conn.getresponse()
+                if resp.status != 200:
+                    raise OSError(f"SSE status {resp.status}")
+                backoff = 2.0
+                buf = b""
+                while True:
+                    chunk = resp.read(1)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    if buf.endswith(b"\n\n"):
+                        for raw_line in buf.split(b"\n"):
+                            line = raw_line.decode("utf-8", errors="replace").strip()
+                            if not line.startswith("data:"):
+                                continue
+                            payload_str = line[5:].strip()
+                            if not payload_str or payload_str == '{"type":"connected"}':
+                                continue
+                            try:
+                                evt = json.loads(payload_str)
+                            except json.JSONDecodeError:
+                                continue
+                            if evt.get("type") != "comment_added":
+                                continue
+                            comment = evt.get("comment", {})
+                            if own_agent_id and comment.get("authorAgentId") == own_agent_id:
+                                continue
+                            # Format: compact JSON message injected into PTY
+                            msg = json.dumps({
+                                "type": "new_message",
+                                "threadId": evt.get("threadId", thread_id),
+                                "commentId": comment.get("id", ""),
+                                "senderName": comment.get("authorName") or "inconnu",
+                                "senderId": comment.get("authorAgentId") or "",
+                                "body": comment.get("body", ""),
+                            }, ensure_ascii=False)
+                            http("POST", "/pty/write", {"tab_id": tab_id, "text": msg + "\r"})
+                        buf = b""
+            except Exception:
+                pass
+            finally:
+                try:
+                    if conn is not None:
+                        conn.close()
+                except Exception:
+                    pass
+            time.sleep(min(backoff, 60.0))
+            backoff = min(backoff * 2, 60.0)
+
+    threading.Thread(target=_listen, daemon=True, name=f"sse-{tab_id}").start()
 
 
 TOOLS = [
@@ -723,6 +793,8 @@ def handle_tool(name: str, args: dict) -> str:
             return f"[error: spawn Claude: {result}]"
 
         _start_socket_listener(tab_id)
+        if pc_thread_id:
+            _start_sse_listener(tab_id, pc_thread_id, pc_agent_id)
 
         if cwd:
             time.sleep(0.3)
@@ -901,6 +973,8 @@ def _ubik_create_session(args: dict) -> str:
         return f"[error: PTY spawn failed: {result}]"
 
     _start_socket_listener(tab_id)
+    if pc_thread_id:
+        _start_sse_listener(tab_id, pc_thread_id, pc_agent_id)
 
     initial_directive = args.get("initialDirective")
     if initial_directive:
@@ -1024,14 +1098,21 @@ def _system_send_to_thread(args: dict) -> str:
     except Exception as e:
         return f"[error: Paperclip add_comment: {e}]"
 
-    # Resolve author display name for the wake payload prefix.
+    # Resolve author display name for the wake payload.
     author_name = args.get("authorName")
     if not author_name and author_agent_id:
         reg = _registry_load()
         author_name = reg.get(author_agent_id, {}).get("name") or author_agent_id[:8]
     if not author_name:
         author_name = "Human"
-    wake_payload = f"[{author_name}] : {body}"
+    wake_payload = json.dumps({
+        "type": "new_message",
+        "threadId": thread_id,
+        "senderName": author_name,
+        "senderId": author_agent_id or "",
+        "body": body,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }, ensure_ascii=False)
 
     attached = _registry_for_thread(thread_id)
     mentions = set(_MENTION_RE.findall(body))
