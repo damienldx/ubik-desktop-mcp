@@ -5,6 +5,7 @@ import http.client as _http_client
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -41,6 +42,33 @@ STOPWORDS = {
     "each", "few", "more", "most", "other", "some", "such", "no", "nor", "not", "only",
     "own", "same", "so", "than", "too", "very", "can", "will", "just", "should", "now"
 }
+
+def _qubik_suggest(query: str) -> dict:
+    """Query qubik_search.py on dev-station-02 — returns {skills, suggested_agent_id}.
+    Silent on any error (SSH down, VM unavailable, timeout).
+    """
+    try:
+        script = f"cd ~/workspace/UBIK-ENGINE && python3 qubik_search.py {json.dumps(query)} 5 2>/dev/null"
+        p = subprocess.run(
+            ["ssh", "dev-station-02", script],
+            capture_output=True, text=True, timeout=10,
+            env=os.environ.copy(),
+        )
+        if p.returncode != 0:
+            return {}
+        for line in p.stdout.strip().splitlines():
+            line = line.strip()
+            if line.startswith("{"):
+                try:
+                    result = json.loads(line)
+                    skills = [t.get("name") for t in result.get("tools", []) if t.get("name")]
+                    return {"skills": skills, "suggested_agent_id": result.get("suggested_agent_id")}
+                except json.JSONDecodeError:
+                    pass
+    except Exception:
+        pass
+    return {}
+
 
 def _nvm_path_env() -> dict:
     """Inject nvm node bin into PATH so gemini/codex/npx are findable in spawned PTYs."""
@@ -82,6 +110,44 @@ def pc_call(method: str, path: str, body: dict | None = None) -> Any:
         if not raw:
             return {}
         return json.loads(raw)
+
+
+def ubik_list_processes() -> dict:
+    """List active agent processes (claude, gemini, codex, ubik).
+    Used by the Agents module in UBIK-DESKTOP to map active sessions.
+    """
+    import subprocess
+    try:
+        # ps -eo pid,pcpu,pmem,etime,args
+        # We filter for common agent keywords
+        cmd = ["ps", "-eo", "pid,pcpu,pmem,etime,args"]
+        output = subprocess.check_output(cmd, text=True)
+        lines = output.splitlines()
+        processes = []
+        
+        keywords = ["claude", "gemini", "codex", "ubik", "node", "python"]
+        
+        for line in lines[1:]:
+            # Simple heuristic: must contain one of our keywords and not be this script or ps itself
+            if any(kw in line.lower() for kw in keywords):
+                if "ps -eo" in line or "server.py" in line:
+                    continue
+                
+                # Split by whitespace, but keep the command (args) as a single string
+                # parts: [pid, pcpu, pmem, etime, args...]
+                parts = line.strip().split(None, 4)
+                if len(parts) >= 5:
+                    processes.append({
+                        "pid": parts[0],
+                        "cpu": parts[1],
+                        "mem": parts[2],
+                        "time": parts[3],
+                        "command": parts[4]
+                    })
+        
+        return {"ok": True, "processes": processes}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 def _registry_load() -> dict:
@@ -222,12 +288,13 @@ def _start_sse_listener(tab_id: str, thread_id: str, own_agent_id: str | None = 
                 backoff = 2.0
                 buf = b""
                 while True:
-                    chunk = resp.read(1)
+                    chunk = resp.read(4096)
                     if not chunk:
                         break
                     buf += chunk
-                    if buf.endswith(b"\n\n"):
-                        for raw_line in buf.split(b"\n"):
+                    while b"\n\n" in buf:
+                        event_block, buf = buf.split(b"\n\n", 1)
+                        for raw_line in event_block.split(b"\n"):
                             line = raw_line.decode("utf-8", errors="replace").strip()
                             if not line.startswith("data:"):
                                 continue
@@ -251,9 +318,9 @@ def _start_sse_listener(tab_id: str, thread_id: str, own_agent_id: str | None = 
                                 "senderName": comment.get("authorName") or "inconnu",
                                 "senderId": comment.get("authorAgentId") or "",
                                 "body": comment.get("body", ""),
+                                "action": f"Reply using paperclip_thread_comment tool with issueId={evt.get('threadId', thread_id)}",
                             }, ensure_ascii=False)
                             http("POST", "/pty/write", {"tab_id": tab_id, "text": msg + "\r"})
-                        buf = b""
             except Exception:
                 pass
             finally:
@@ -302,6 +369,7 @@ TOOLS = [
                 "initialDirective": {"type": "string", "description": "Premier message envoyé à l'agent au démarrage."},
                 "workspace":        {"type": "string", "description": "Répertoire de travail de l'agent."},
                 "companyId":        {"type": "string", "description": "Company UUID. Sinon prend la première company."},
+                "memory_profile":   {"type": "string", "enum": ["full", "worker"], "description": "Profil mémoire : 'full' (défaut) charge tout UBIK-MEMORY, 'worker' le désactive pour les sous-agents tâche-unique."},
             },
             "required": ["tab_id"],
         },
@@ -509,6 +577,7 @@ TOOLS = [
                 "initialDirective": {"type": "string", "description": "Premier message envoyé à Claude au démarrage (wiring Paperclip). Prioritaire sur initial_prompt."},
                 "workspace":        {"type": "string", "description": "Répertoire de travail (wiring Paperclip, prioritaire sur cwd)."},
                 "companyId":        {"type": "string", "description": "Company UUID. Sinon prend la première company."},
+                "memory_profile":   {"type": "string", "enum": ["full", "worker"], "description": "Profil mémoire : 'full' (défaut) charge tout UBIK-MEMORY, 'worker' le désactive pour les sous-agents tâche-unique."},
             },
             "required": ["tab_id"],
         },
@@ -608,16 +677,71 @@ def handle_tool(name: str, args: dict) -> str:
             return "\n".join(sessions) if sessions else "Aucune session active."
         return str(sessions)
 
+    elif name == "ubik_list_processes":
+        try:
+            cmd = "ps -eo pid,ppid,%cpu,%mem,etime,cmd --sort=-%cpu | grep -E 'claude|gemini|codex|ubik' | grep -v grep"
+            out = subprocess.check_output(cmd, shell=True).decode()
+            lines = out.strip().split('\n')
+            # Build agent_id→tab_id map from system-agents registry
+            reg = _registry_load()
+            agent_to_tab = {aid: v.get("tabId") for aid, v in reg.items() if v.get("tabId")}
+
+            def _pid_agent_tab(pid: str):
+                """Read PAPERCLIP_AGENT_ID from /proc/{pid}/environ."""
+                try:
+                    with open(f"/proc/{pid}/environ", "rb") as f:
+                        env_data = f.read()
+                    env_vars = dict(e.split(b"=", 1) for e in env_data.split(b"\x00") if b"=" in e)
+                    agent_id = env_vars.get(b"PAPERCLIP_AGENT_ID", b"").decode()
+                    if agent_id:
+                        return agent_id, agent_to_tab.get(agent_id)
+                except Exception:
+                    pass
+                return None, None
+
+            procs = []
+            for line in lines:
+                parts = line.split(None, 5)
+                if len(parts) >= 6:
+                    pid = parts[0]
+                    agent_id, tab_id = _pid_agent_tab(pid)
+                    procs.append({
+                        "pid": pid,
+                        "ppid": parts[1],
+                        "cpu": parts[2],
+                        "mem": parts[3],
+                        "etime": parts[4],
+                        "cmd": parts[5],
+                        "tabId": tab_id,
+                        "agentId": agent_id,
+                    })
+            return json.dumps(procs)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+
     elif name == "ubik_create_session":
         return _ubik_create_session(args)
 
     elif name == "ubik_write":
         tab_id = args["tab_id"]
         text   = args["text"]
-        if not text.endswith("\r"):
-            text += "\r"
-        result = http("POST", "/pty/write", {"tab_id": tab_id, "text": text})
-        return "Envoyé." if result.get("ok") else f"Erreur: {result}"
+        # Chunk large payloads — PTY write buffer saturates around 2000 chars.
+        # Split at word boundaries; only the final chunk gets \r.
+        CHUNK = 1800
+        if len(text) <= CHUNK:
+            if not text.endswith("\r"):
+                text += "\r"
+            result = http("POST", "/pty/write", {"tab_id": tab_id, "text": text})
+            return "Envoyé." if result.get("ok") else f"Erreur: {result}"
+        chunks = [text[i:i+CHUNK] for i in range(0, len(text), CHUNK)]
+        for i, chunk in enumerate(chunks):
+            payload = chunk if i < len(chunks) - 1 else (chunk if chunk.endswith("\r") else chunk + "\r")
+            result = http("POST", "/pty/write", {"tab_id": tab_id, "text": payload})
+            if not result.get("ok"):
+                return f"Erreur chunk {i}: {result}"
+            if i < len(chunks) - 1:
+                time.sleep(0.2)
+        return f"Envoyé ({len(chunks)} chunks)."
 
     elif name == "ubik_read":
         tab_id = args["tab_id"]
@@ -772,6 +896,9 @@ def handle_tool(name: str, args: dict) -> str:
             except (ValueError, urllib.error.HTTPError) as e:
                 return f"[error: Paperclip wiring: {e}]"
 
+        if args.get("memory_profile", "full") == "worker":
+            env["UBIK_MEMORY_MODE"] = "worker"
+
         # Pre-trust the workspace so Claude CLI skips the interactive trust dialog
         _pre_trust_workspace(cwd or str(Path.home()))
 
@@ -909,33 +1036,6 @@ def handle_tool(name: str, args: dict) -> str:
     return f"Outil inconnu: {name}"
 
 
-# ── SYSTEM tool implementations ──────────────────────────────────────────────
-
-def _ubik_list_sessions(args: dict) -> str:
-    sessions = http("GET", "/pty/sessions")
-    if isinstance(sessions, list):
-        return "\n".join(sessions) if sessions else "Aucune session active."
-    return str(sessions)
-
-def _ubik_read(args: dict) -> str:
-    tab_id = args["tab_id"]
-    result = http("GET", f"/pty/read/{tab_id}")
-    output = result.get("output", "")
-    if not output:
-        return "(buffer vide)"
-    clean = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]', '', output)
-    clean = re.sub(r'\x1b\][^\x07]*\x07', '', clean)
-    clean = clean.replace('\r\n', '\n').replace('\r', '')
-    return clean.strip()
-
-def _ubik_write(args: dict) -> str:
-    tab_id = args["tab_id"]
-    text = args["text"]
-    if not text.endswith("\r"):
-        text += "\r"
-    result = http("POST", "/pty/write", {"tab_id": tab_id, "text": text})
-    return "Envoyé." if result.get("ok") else f"Erreur: {result}"
-
 
 def _ubik_create_session(args: dict) -> str:
     tab_id = args["tab_id"]
@@ -953,6 +1053,8 @@ def _ubik_create_session(args: dict) -> str:
         except (ValueError, urllib.error.HTTPError) as e:
             return f"[error: Paperclip wiring: {e}]"
 
+    if args.get("memory_profile", "full") == "worker":
+        env["UBIK_MEMORY_MODE"] = "worker"
     env.update(_nvm_path_env())
 
     body = {
@@ -1019,6 +1121,10 @@ def _paperclip_wire(args: dict, tab_id: str) -> tuple[str | None, str | None, di
     workspace = args.get("workspace")
     initial_directive = args.get("initialDirective")
     thread_id = args.get("threadId")
+
+    if not skills and initial_directive:
+        suggested = _qubik_suggest(initial_directive)
+        skills = suggested.get("skills") or []
 
     agent_body = {"name": name, "role": role, "adapterType": model, "adapterConfig": {}}
     if skills:
