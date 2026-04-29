@@ -661,6 +661,150 @@ TOOLS = [
             "required": ["tab_id"],
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "activity_emit",
+            "description": "Déclare l'activité courante de l'agent dans le flux Activity de UBIK-DESKTOP. Utilise ce tool pour signaler ce que tu es en train de faire : étape en cours, outil utilisé, décision prise. Visible en temps réel dans l'onglet Activity.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "step": {
+                        "type": "string",
+                        "description": "Nom court de l'étape (ex: 'analyse', 'refactor', 'test', 'deploy')",
+                    },
+                    "detail": {
+                        "type": "string",
+                        "description": "Description de ce que tu fais en ce moment (1-2 phrases max)",
+                    },
+                },
+                "required": ["step"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "activity_read",
+            "description": "Lit le flux Activity de UBIK-DESKTOP : voir ce que les autres agents font en ce moment. Retourne les N derniers événements d'activité (agent, étape, détail, horodatage).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Nombre d'événements à retourner (défaut: 20, max: 100)",
+                        "default": 20,
+                    },
+                },
+            },
+        },
+    },
+    # ── CODIR tools ──────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "codir_cto",
+            "description": (
+                "Délègue une tâche au CTO du CODIR (Chief Technology Officer). "
+                "Scope : architecture, backend, API, microservices, TypeScript/Tauri, "
+                "tests, legacy refactoring, standards d'engineering, dette technique, scalabilité plateforme. "
+                "Le CTO ouvre un terminal UBIK dédié et délègue à ses Division Chiefs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task":      {"type": "string", "description": "Brief stratégique : contexte business, livrable attendu, contraintes non-négociables."},
+                    "context":   {"type": "string", "description": "Contexte additionnel : état du projet, décisions passées, dépendances."},
+                    "workspace": {"type": "string", "description": "Répertoire de travail initial (optionnel)."},
+                },
+                "required": ["task"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "codir_cdo",
+            "description": (
+                "Délègue une tâche au CDO du CODIR (Chief Data Officer). "
+                "Scope : stratégie data, ML/AI, pipelines ETL, streaming, gouvernance, "
+                "qualité des données, embeddings, analytics, Sheets, modèles prédictifs. "
+                "Le CDO ouvre un terminal UBIK dédié et délègue à ses Division Chiefs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task":      {"type": "string", "description": "Brief stratégique : contexte business, livrable attendu, contraintes de gouvernance."},
+                    "context":   {"type": "string", "description": "Contexte additionnel : sources de données, SLA fraîcheur, contraintes de conformité."},
+                    "workspace": {"type": "string", "description": "Répertoire de travail initial (optionnel)."},
+                },
+                "required": ["task"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "codir_ciso",
+            "description": (
+                "Délègue une tâche au CISO du CODIR (Chief Information Security Officer). "
+                "Scope : posture de sécurité, pentest, scanners, OAuth/secrets, zero-trust, "
+                "conformité, incident response, threat modeling, revue d'architecture sécurité. "
+                "Le CISO ouvre un terminal UBIK dédié et délègue à ses Division Chiefs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task":      {"type": "string", "description": "Brief stratégique : périmètre de risque, niveau d'exigence, livrable attendu."},
+                    "context":   {"type": "string", "description": "Contexte additionnel : threat model, contraintes de conformité, incidents passés."},
+                    "workspace": {"type": "string", "description": "Répertoire de travail initial (optionnel)."},
+                },
+                "required": ["task"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "codir_cpo",
+            "description": (
+                "Délègue une tâche au CPO du CODIR (Chief Product Officer). "
+                "Scope : vision produit, priorisation features, UX/accessibilité, React/frontend, "
+                "SEO, animations, A/B testing, design system, recherche utilisateur. "
+                "Le CPO ouvre un terminal UBIK dédié et délègue à ses Division Chiefs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task":      {"type": "string", "description": "Brief stratégique : contexte utilisateur, outcome attendu, contraintes UX non-négociables."},
+                    "context":   {"type": "string", "description": "Contexte additionnel : personas, métriques produit, roadmap existante."},
+                    "workspace": {"type": "string", "description": "Répertoire de travail initial (optionnel)."},
+                },
+                "required": ["task"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "codir_coo",
+            "description": (
+                "Délègue une tâche au COO du CODIR (Chief Operating Officer). "
+                "Scope : fiabilité opérationnelle, cloud/AWS/GCP/K8s, CI/CD, serverless, "
+                "monitoring/observabilité, chaos engineering, scalabilité, optimisation coûts infra. "
+                "Le COO ouvre un terminal UBIK dédié et délègue à ses Division Chiefs."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task":      {"type": "string", "description": "Brief stratégique : contexte opérationnel, SLA attendu, contraintes de coût."},
+                    "context":   {"type": "string", "description": "Contexte additionnel : état infra actuel, incidents récents, budget disponible."},
+                    "workspace": {"type": "string", "description": "Répertoire de travail initial (optionnel)."},
+                },
+                "required": ["task"],
+            },
+        },
+    },
 ]
 
 def handle_tool(name: str, args: dict) -> str:
@@ -1033,8 +1177,126 @@ def handle_tool(name: str, args: dict) -> str:
         result = http("DELETE", f"/pty/{tab_id}")
         return f"Terminal Claude '{tab_id}' fermé." if result.get("ok") else f"Erreur: {result}"
 
+    elif name == "codir_cto":
+        return _codir_spawn("cto", args)
+
+    elif name == "codir_cdo":
+        return _codir_spawn("cdo", args)
+
+    elif name == "codir_ciso":
+        return _codir_spawn("ciso", args)
+
+    elif name == "codir_cpo":
+        return _codir_spawn("cpo", args)
+
+    elif name == "codir_coo":
+        return _codir_spawn("coo", args)
+
+    elif name == "activity_emit":
+        return _activity_emit(args)
+
+    elif name == "activity_read":
+        return _activity_read(args)
+
     return f"Outil inconnu: {name}"
 
+
+
+def _activity_emit(args: dict) -> str:
+    import os
+    step = args.get("step", "")
+    detail = args.get("detail", "")
+    tab_id = os.environ.get("UBIK_TAB_ID", "")
+    agent = os.environ.get("UBIK_AGENT_ID") or tab_id or "unknown"
+    try:
+        http("POST", "/activity", {"tab_id": tab_id, "agent": agent, "step": step, "detail": detail})
+        return f"[activity] emitted: {step}"
+    except Exception as e:
+        return f"[activity] error: {e}"
+
+
+def _activity_read(args: dict) -> str:
+    import datetime
+    limit = min(int(args.get("limit", 20)), 100)
+    try:
+        events = http("GET", f"/activity?limit={limit}")
+        if not events or isinstance(events, dict):
+            return "[activity] no events yet"
+        lines = []
+        for e in events:
+            ts_s = e.get("ts", 0) // 1000
+            t = datetime.datetime.fromtimestamp(ts_s).strftime("%H:%M:%S")
+            agent = e.get("agent", "?")
+            step = e.get("step", "?")
+            detail = e.get("detail", "")
+            lines.append(f"[{t}] {agent} · {step}" + (f" — {detail}" if detail else ""))
+        return "\n".join(lines) if lines else "[activity] no events yet"
+    except Exception as e:
+        return f"[activity] error: {e}"
+
+
+def _codir_spawn(member: str, args: dict) -> str:
+    """Spawn a CODIR member (cto/cdo/ciso/cpo/coo) with an enriched directive."""
+    task = args.get("task", "")
+    context = args.get("context", "")
+    tab_id = f"codir-{member}-{int(time.time())}"
+
+    # Enrich directive with QUBIK suggestions (agents + skills relevant to the task)
+    qubik = _qubik_suggest(task)
+    suggestions = ""
+    if qubik.get("skills"):
+        suggestions += f"\n\n[QUBIK — outils suggérés pour cette tâche : {', '.join(qubik['skills'][:6])}]"
+    if qubik.get("suggested_agent_id"):
+        suggestions += f"\n[QUBIK — agent specialist pressenti : {qubik['suggested_agent_id']}]"
+
+    directive_parts = [task]
+    if context:
+        directive_parts.append(f"\nContexte : {context}")
+    if suggestions:
+        directive_parts.append(suggestions)
+    directive = "".join(directive_parts)
+
+    return _ubik_create_session({
+        "tab_id":           tab_id,
+        "agent_id":         f"codir-{member}",
+        "initialDirective": directive,
+        "workspace":        args.get("workspace"),
+        "memory_profile":   "full",
+    })
+
+
+def _codir_cto(args: dict) -> str:  return _codir_spawn("cto", args)
+def _codir_cdo(args: dict) -> str:  return _codir_spawn("cdo", args)
+def _codir_ciso(args: dict) -> str: return _codir_spawn("ciso", args)
+def _codir_cpo(args: dict) -> str:  return _codir_spawn("cpo", args)
+def _codir_coo(args: dict) -> str:  return _codir_spawn("coo", args)
+
+
+def _ubik_list_sessions(args: dict) -> str:
+    sessions = http("GET", "/pty/sessions")
+    if isinstance(sessions, list):
+        return "\n".join(sessions) if sessions else "Aucune session active."
+    return str(sessions)
+
+
+def _ubik_read(args: dict) -> str:
+    tab_id = args.get("tab_id", "")
+    deadline = time.time() + 60
+    accumulated = ""
+    _ansi = re.compile(r'\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*\x07)')
+
+    while time.time() < deadline:
+        time.sleep(3)
+        chunk = http("GET", f"/pty/read/{tab_id}").get("output", "")
+        accumulated += chunk
+        clean = _ansi.sub('', accumulated).replace('\r\n', '\n').replace('\r', '').strip()
+        # ▶ appearing after content = agent is done thinking, waiting for next input
+        lines = [l for l in clean.splitlines() if l.strip()]
+        if lines and '▶' in lines[-1] and len(clean) > 80:
+            return clean
+    # Timeout — return whatever we have
+    clean = _ansi.sub('', accumulated).replace('\r\n', '\n').replace('\r', '').strip()
+    return clean or "(buffer vide après 60s)"
 
 
 def _ubik_create_session(args: dict) -> str:
@@ -1091,7 +1353,8 @@ def _ubik_create_session(args: dict) -> str:
                 ready = True
                 break
         if ready:
-            http("POST", "/pty/write", {"tab_id": tab_id, "text": initial_directive + "\r"})
+            safe = initial_directive.replace("\n\n", " — ").replace("\n", " ")
+            http("POST", "/pty/write", {"tab_id": tab_id, "text": safe + "\r"})
 
     summary: dict = {"tab_id": tab_id, "status": "terminal ouvert"}
     if pc_agent_id:
