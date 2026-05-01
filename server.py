@@ -349,11 +349,12 @@ TOOLS = [
     {
         "name": "ubik_create_session",
         "description": (
-            "Spawn un agent UBIK (Genie/ubik-cli) dans un terminal visible UBIK-DESKTOP. "
+            "Spawn un agent UBIK (Genie/ubik-cli) — par défaut dans un terminal visible UBIK-DESKTOP. "
+            "Avec 'headless: true' → PTY invisible (sous-agent IDE one-shot, lire la réponse via ubik_read). "
             "Si 'name' est fourni : crée un agent Paperclip, un thread, injecte les env vars, "
             "enregistre dans le registre system-agents — l'agent peut recevoir des messages via "
-            "system_send_to_thread. Sans 'name' : PTY générique visible. "
-            "Provider : UBIK / Genie. Pour Claude, utiliser claude_spawn_terminal."
+            "system_send_to_thread. Sans 'name' : PTY générique. "
+            "Provider : UBIK / Genie. Pour Claude, utiliser claude_spawn_terminal ou claude_run_task."
         ),
         "inputSchema": {
             "type": "object",
@@ -370,6 +371,7 @@ TOOLS = [
                 "workspace":        {"type": "string", "description": "Répertoire de travail de l'agent."},
                 "companyId":        {"type": "string", "description": "Company UUID. Sinon prend la première company."},
                 "memory_profile":   {"type": "string", "enum": ["full", "worker"], "description": "Profil mémoire : 'full' (défaut) charge tout UBIK-MEMORY, 'worker' le désactive pour les sous-agents tâche-unique."},
+                "headless":         {"type": "boolean", "description": "Si true, le PTY tourne sans fenêtre visible — pour sous-agents IDE (lis le résultat via ubik_read). Défaut: false (terminal visible)."},
             },
             "required": ["tab_id"],
         },
@@ -696,6 +698,30 @@ TOOLS = [
                         "default": 20,
                     },
                 },
+            },
+        },
+    },
+    # ── IDE Shortcuts ─────────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "ide_shortcut_invoke",
+            "description": (
+                "Déclenche un raccourci IDE en arrière-plan sans interrompre le flux de travail en cours. "
+                "Un agent UBIK est spawné en background pour exécuter la tâche. "
+                "Raccourcis disponibles : review, fix, commit, doc, test, explain, optimize, build, refactor. "
+                "Utilise ce tool quand l'utilisateur demande une action parallèle ou quand tu veux déléguer "
+                "une tâche secondaire sans couper ta session principale."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "trigger": {
+                        "type": "string",
+                        "description": "Identifiant du raccourci (ex: 'review', 'fix', 'commit', 'doc', 'test', 'explain', 'optimize', 'build', 'refactor')",
+                    },
+                },
+                "required": ["trigger"],
             },
         },
     },
@@ -1198,8 +1224,23 @@ def handle_tool(name: str, args: dict) -> str:
     elif name == "activity_read":
         return _activity_read(args)
 
+    elif name == "ide_shortcut_invoke":
+        return _ide_shortcut_invoke(args)
+
     return f"Outil inconnu: {name}"
 
+
+
+def _ide_shortcut_invoke(args: dict) -> str:
+    import requests as req
+    trigger = args.get("trigger", "")
+    if not trigger:
+        return '{"ok": false, "error": "trigger requis"}'
+    try:
+        r = req.post(f"{BASE}/shortcuts/invoke", json={"trigger": trigger}, timeout=5)
+        return r.text
+    except Exception as e:
+        return f'{{"ok": false, "error": "{e}"}}'
 
 
 def _activity_emit(args: dict) -> str:
@@ -1324,7 +1365,7 @@ def _ubik_create_session(args: dict) -> str:
         "rows": 40,
         "cols": 200,
         "agent": agent_path,
-        "headless": False,
+        "headless": bool(args.get("headless", False)),
         "env": env,
     }
     result = http("POST", "/pty/create", body)
