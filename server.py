@@ -664,171 +664,134 @@ TOOLS = [
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "activity_emit",
-            "description": "Déclare l'activité courante de l'agent dans le flux Activity de UBIK-DESKTOP. Utilise ce tool pour signaler ce que tu es en train de faire : étape en cours, outil utilisé, décision prise. Visible en temps réel dans l'onglet Activity.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "step": {
-                        "type": "string",
-                        "description": "Nom court de l'étape (ex: 'analyse', 'refactor', 'test', 'deploy')",
-                    },
-                    "detail": {
-                        "type": "string",
-                        "description": "Description de ce que tu fais en ce moment (1-2 phrases max)",
-                    },
-                },
-                "required": ["step"],
+        "name": "activity_emit",
+        "description": "Déclare l'activité courante de l'agent dans le flux Activity de UBIK-DESKTOP. Utilise ce tool pour signaler ce que tu es en train de faire : étape en cours, outil utilisé, décision prise. Visible en temps réel dans l'onglet Activity.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "step":   {"type": "string", "description": "Nom court de l'étape (ex: 'analyse', 'refactor', 'test', 'deploy')"},
+                "detail": {"type": "string", "description": "Description de ce que tu fais en ce moment (1-2 phrases max)"},
             },
+            "required": ["step"],
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "activity_read",
-            "description": "Lit le flux Activity de UBIK-DESKTOP : voir ce que les autres agents font en ce moment. Retourne les N derniers événements d'activité (agent, étape, détail, horodatage).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "Nombre d'événements à retourner (défaut: 20, max: 100)",
-                        "default": 20,
-                    },
-                },
+        "name": "activity_read",
+        "description": "Lit le flux Activity de UBIK-DESKTOP : voir ce que les autres agents font en ce moment. Retourne les N derniers événements d'activité (agent, étape, détail, horodatage).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Nombre d'événements à retourner (défaut: 20, max: 100)", "default": 20},
             },
         },
     },
     # ── IDE Shortcuts ─────────────────────────────────────────────────────────
     {
-        "type": "function",
-        "function": {
-            "name": "ide_shortcut_invoke",
-            "description": (
-                "Déclenche un raccourci IDE en arrière-plan sans interrompre le flux de travail en cours. "
-                "Un agent UBIK est spawné en background pour exécuter la tâche. "
-                "Raccourcis disponibles : review, fix, commit, doc, test, explain, optimize, build, refactor. "
-                "Utilise ce tool quand l'utilisateur demande une action parallèle ou quand tu veux déléguer "
-                "une tâche secondaire sans couper ta session principale."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "trigger": {
-                        "type": "string",
-                        "description": "Identifiant du raccourci (ex: 'review', 'fix', 'commit', 'doc', 'test', 'explain', 'optimize', 'build', 'refactor')",
-                    },
-                },
-                "required": ["trigger"],
+        "name": "ide_shortcut_invoke",
+        "description": (
+            "Déclenche un raccourci IDE en arrière-plan sans interrompre le flux de travail en cours. "
+            "Un agent UBIK est spawné en background pour exécuter la tâche. "
+            "Raccourcis disponibles : review, fix, commit, doc, test, explain, optimize, build, refactor. "
+            "Utilise ce tool quand l'utilisateur demande une action parallèle ou quand tu veux déléguer "
+            "une tâche secondaire sans couper ta session principale."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "trigger": {"type": "string", "description": "Identifiant du raccourci (ex: 'review', 'fix', 'commit', 'doc', 'test', 'explain', 'optimize', 'build', 'refactor')"},
             },
+            "required": ["trigger"],
         },
     },
     # ── CODIR tools ──────────────────────────────────────────────────────────
     {
-        "type": "function",
-        "function": {
-            "name": "codir_cto",
-            "description": (
-                "Délègue une tâche au CTO du CODIR (Chief Technology Officer). "
-                "Scope : architecture, backend, API, microservices, TypeScript/Tauri, "
-                "tests, legacy refactoring, standards d'engineering, dette technique, scalabilité plateforme. "
-                "Le CTO ouvre un terminal UBIK dédié et délègue à ses Division Chiefs."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "task":      {"type": "string", "description": "Brief stratégique : contexte business, livrable attendu, contraintes non-négociables."},
-                    "context":   {"type": "string", "description": "Contexte additionnel : état du projet, décisions passées, dépendances."},
-                    "workspace": {"type": "string", "description": "Répertoire de travail initial (optionnel)."},
-                },
-                "required": ["task"],
+        "name": "codir_cto",
+        "description": (
+            "Délègue une tâche au CTO du CODIR (Chief Technology Officer). "
+            "Scope : architecture, backend, API, microservices, TypeScript/Tauri, "
+            "tests, legacy refactoring, standards d'engineering, dette technique, scalabilité plateforme. "
+            "Le CTO ouvre un terminal UBIK dédié et délègue à ses Division Chiefs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task":      {"type": "string", "description": "Brief stratégique : contexte business, livrable attendu, contraintes non-négociables."},
+                "context":   {"type": "string", "description": "Contexte additionnel : état du projet, décisions passées, dépendances."},
+                "workspace": {"type": "string", "description": "Répertoire de travail initial (optionnel)."},
             },
+            "required": ["task"],
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "codir_cdo",
-            "description": (
-                "Délègue une tâche au CDO du CODIR (Chief Data Officer). "
-                "Scope : stratégie data, ML/AI, pipelines ETL, streaming, gouvernance, "
-                "qualité des données, embeddings, analytics, Sheets, modèles prédictifs. "
-                "Le CDO ouvre un terminal UBIK dédié et délègue à ses Division Chiefs."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "task":      {"type": "string", "description": "Brief stratégique : contexte business, livrable attendu, contraintes de gouvernance."},
-                    "context":   {"type": "string", "description": "Contexte additionnel : sources de données, SLA fraîcheur, contraintes de conformité."},
-                    "workspace": {"type": "string", "description": "Répertoire de travail initial (optionnel)."},
-                },
-                "required": ["task"],
+        "name": "codir_cdo",
+        "description": (
+            "Délègue une tâche au CDO du CODIR (Chief Data Officer). "
+            "Scope : stratégie data, ML/AI, pipelines ETL, streaming, gouvernance, "
+            "qualité des données, embeddings, analytics, Sheets, modèles prédictifs. "
+            "Le CDO ouvre un terminal UBIK dédié et délègue à ses Division Chiefs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task":      {"type": "string", "description": "Brief stratégique : contexte business, livrable attendu, contraintes de gouvernance."},
+                "context":   {"type": "string", "description": "Contexte additionnel : sources de données, SLA fraîcheur, contraintes de conformité."},
+                "workspace": {"type": "string", "description": "Répertoire de travail initial (optionnel)."},
             },
+            "required": ["task"],
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "codir_ciso",
-            "description": (
-                "Délègue une tâche au CISO du CODIR (Chief Information Security Officer). "
-                "Scope : posture de sécurité, pentest, scanners, OAuth/secrets, zero-trust, "
-                "conformité, incident response, threat modeling, revue d'architecture sécurité. "
-                "Le CISO ouvre un terminal UBIK dédié et délègue à ses Division Chiefs."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "task":      {"type": "string", "description": "Brief stratégique : périmètre de risque, niveau d'exigence, livrable attendu."},
-                    "context":   {"type": "string", "description": "Contexte additionnel : threat model, contraintes de conformité, incidents passés."},
-                    "workspace": {"type": "string", "description": "Répertoire de travail initial (optionnel)."},
-                },
-                "required": ["task"],
+        "name": "codir_ciso",
+        "description": (
+            "Délègue une tâche au CISO du CODIR (Chief Information Security Officer). "
+            "Scope : posture de sécurité, pentest, scanners, OAuth/secrets, zero-trust, "
+            "conformité, incident response, threat modeling, revue d'architecture sécurité. "
+            "Le CISO ouvre un terminal UBIK dédié et délègue à ses Division Chiefs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task":      {"type": "string", "description": "Brief stratégique : périmètre de risque, niveau d'exigence, livrable attendu."},
+                "context":   {"type": "string", "description": "Contexte additionnel : threat model, contraintes de conformité, incidents passés."},
+                "workspace": {"type": "string", "description": "Répertoire de travail initial (optionnel)."},
             },
+            "required": ["task"],
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "codir_cpo",
-            "description": (
-                "Délègue une tâche au CPO du CODIR (Chief Product Officer). "
-                "Scope : vision produit, priorisation features, UX/accessibilité, React/frontend, "
-                "SEO, animations, A/B testing, design system, recherche utilisateur. "
-                "Le CPO ouvre un terminal UBIK dédié et délègue à ses Division Chiefs."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "task":      {"type": "string", "description": "Brief stratégique : contexte utilisateur, outcome attendu, contraintes UX non-négociables."},
-                    "context":   {"type": "string", "description": "Contexte additionnel : personas, métriques produit, roadmap existante."},
-                    "workspace": {"type": "string", "description": "Répertoire de travail initial (optionnel)."},
-                },
-                "required": ["task"],
+        "name": "codir_cpo",
+        "description": (
+            "Délègue une tâche au CPO du CODIR (Chief Product Officer). "
+            "Scope : vision produit, priorisation features, UX/accessibilité, React/frontend, "
+            "SEO, animations, A/B testing, design system, recherche utilisateur. "
+            "Le CPO ouvre un terminal UBIK dédié et délègue à ses Division Chiefs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task":      {"type": "string", "description": "Brief stratégique : contexte utilisateur, outcome attendu, contraintes UX non-négociables."},
+                "context":   {"type": "string", "description": "Contexte additionnel : personas, métriques produit, roadmap existante."},
+                "workspace": {"type": "string", "description": "Répertoire de travail initial (optionnel)."},
             },
+            "required": ["task"],
         },
     },
     {
-        "type": "function",
-        "function": {
-            "name": "codir_coo",
-            "description": (
-                "Délègue une tâche au COO du CODIR (Chief Operating Officer). "
-                "Scope : fiabilité opérationnelle, cloud/AWS/GCP/K8s, CI/CD, serverless, "
-                "monitoring/observabilité, chaos engineering, scalabilité, optimisation coûts infra. "
-                "Le COO ouvre un terminal UBIK dédié et délègue à ses Division Chiefs."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "task":      {"type": "string", "description": "Brief stratégique : contexte opérationnel, SLA attendu, contraintes de coût."},
-                    "context":   {"type": "string", "description": "Contexte additionnel : état infra actuel, incidents récents, budget disponible."},
-                    "workspace": {"type": "string", "description": "Répertoire de travail initial (optionnel)."},
-                },
-                "required": ["task"],
+        "name": "codir_coo",
+        "description": (
+            "Délègue une tâche au COO du CODIR (Chief Operating Officer). "
+            "Scope : fiabilité opérationnelle, cloud/AWS/GCP/K8s, CI/CD, serverless, "
+            "monitoring/observabilité, chaos engineering, scalabilité, optimisation coûts infra. "
+            "Le COO ouvre un terminal UBIK dédié et délègue à ses Division Chiefs."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task":      {"type": "string", "description": "Brief stratégique : contexte opérationnel, SLA attendu, contraintes de coût."},
+                "context":   {"type": "string", "description": "Contexte additionnel : état infra actuel, incidents récents, budget disponible."},
+                "workspace": {"type": "string", "description": "Répertoire de travail initial (optionnel)."},
             },
+            "required": ["task"],
         },
     },
 ]
