@@ -20,6 +20,7 @@ from typing import Any
 
 BASE = "http://127.0.0.1:7891"
 PAPERCLIP_API = "http://127.0.0.1:3100/api"
+DESKTOP_TOOLS = "http://127.0.0.1:8510"  # mcp_ide_shortcut + mcp_agents sidecar
 SYSTEM_REGISTRY = Path.home() / ".ubik-desktop" / "system-agents.json"
 SOCKETS_DIR = Path.home() / ".ubik-desktop" / "sockets"
 # PTY-based agents (Claude CLI) use wakeup/ so write_to_smart doesn't intercept
@@ -94,6 +95,34 @@ def http(method: str, path: str, body: dict | None = None) -> Any:
             return json.loads(r.read())
     except urllib.error.URLError as e:
         return {"error": str(e), "ok": False}
+
+
+def desktop_tools_call(tool: str, args: dict) -> dict:
+    """Call a tool exposed by the desktop-tools sidecar (port 8510)."""
+    data = json.dumps({"args": args}).encode()
+    req = urllib.request.Request(
+        f"{DESKTOP_TOOLS}/api/tools/{tool}",
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            payload = json.loads(r.read())
+        if not payload.get("ok"):
+            return {"error": payload.get("error", "unknown sidecar error")}
+        # Sidecar wraps the tool result as a JSON string under "result".
+        result = payload.get("result", "")
+        if isinstance(result, str):
+            try:
+                return json.loads(result)
+            except json.JSONDecodeError:
+                return {"raw": result}
+        return result
+    except urllib.error.URLError as e:
+        return {"error": f"desktop-tools sidecar unreachable: {e}"}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 def pc_call(method: str, path: str, body: dict | None = None) -> Any:
@@ -794,6 +823,69 @@ TOOLS = [
             "required": ["task"],
         },
     },
+    # ── IDE shortcut workflow (server-side orchestration) ─────────────────────
+    {
+        "name": "ide_shortcut_run",
+        "description": (
+            "Lance un raccourci IDE de UBIK-DESKTOP. Crée un workspace isolé (clone du repo + nouvelle branche), "
+            "spawn un sous-agent UBIK headless qui exécute la tâche dans ce workspace, retourne un job_id. "
+            "Tout le workflow est géré côté serveur — le LLM appelle juste 4 tools : run, status, result, finish. "
+            "Utiliser pour : raccourci de commande (agent_id='ide-worker') OU raccourci d'agent nommé (agent_id='<id-manifest>')."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "trigger":  {"type": "string", "description": "Identifiant du raccourci (ex: 'doc', 'review', 'fix', ou nom d'un agent)."},
+                "task":     {"type": "string", "description": "Instruction passée en initialDirective au sous-agent."},
+                "agent_id": {"type": "string", "description": "Manifest agent à spawner. Défaut: 'ide-worker' pour les commandes."},
+                "repo_url": {"type": "string", "description": "URL du repo GitHub à cloner (https://github.com/owner/repo)."},
+            },
+            "required": ["trigger", "task", "repo_url"],
+        },
+    },
+    {
+        "name": "ide_shortcut_status",
+        "description": "Retourne l'état d'un job IDE (queued/running/done/error) + métadonnées. Pas le contenu du rapport.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string"}},
+            "required": ["job_id"],
+        },
+    },
+    {
+        "name": "ide_shortcut_result",
+        "description": "Retourne le rapport complet (stdout) du sous-agent une fois la tâche terminée. À appeler quand status == 'done'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"job_id": {"type": "string"}},
+            "required": ["job_id"],
+        },
+    },
+    {
+        "name": "ide_shortcut_finish",
+        "description": (
+            "Finalise un job IDE après review : action='merge' pousse la branche, ouvre la PR, déclenche le auto-merge squash, "
+            "et nettoie le workspace. action='abandon' jette le workspace sans PR."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "job_id":   {"type": "string"},
+                "action":   {"type": "string", "enum": ["merge", "abandon"]},
+                "pr_title": {"type": "string", "description": "Titre de la PR (optionnel, défaut généré)."},
+                "pr_body":  {"type": "string", "description": "Description de la PR (optionnel, défaut = task)."},
+            },
+            "required": ["job_id", "action"],
+        },
+    },
+    {
+        "name": "ide_shortcut_list",
+        "description": "Liste tous les jobs IDE de la session courante (running + récemment terminés). Utilisé par le footer UBIK-DESKTOP.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
 ]
 
 def handle_tool(name: str, args: dict) -> str:
@@ -1189,6 +1281,9 @@ def handle_tool(name: str, args: dict) -> str:
 
     elif name == "ide_shortcut_invoke":
         return _ide_shortcut_invoke(args)
+
+    elif name in ("ide_shortcut_run", "ide_shortcut_status", "ide_shortcut_result", "ide_shortcut_finish", "ide_shortcut_list"):
+        return json.dumps(desktop_tools_call(name, args), ensure_ascii=False)
 
     return f"Outil inconnu: {name}"
 
