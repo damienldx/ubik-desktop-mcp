@@ -830,17 +830,20 @@ TOOLS = [
             "Lance un raccourci IDE de UBIK-DESKTOP. Crée un workspace isolé (clone du repo + nouvelle branche), "
             "spawn un sous-agent UBIK headless qui exécute la tâche dans ce workspace, retourne un job_id. "
             "Tout le workflow est géré côté serveur — le LLM appelle juste 4 tools : run, status, result, finish. "
-            "Utiliser pour : raccourci de commande (agent_id='ide-worker') OU raccourci d'agent nommé (agent_id='<id-manifest>')."
+            "Utiliser pour : raccourci de commande (agent_id='ide-worker') OU raccourci d'agent nommé (agent_id='<id-manifest>'). "
+            "TOUS les paramètres sont REQUIS — recopie-les TELS QUELS depuis le prompt utilisateur, n'omets RIEN, "
+            "en particulier parent_tab_id qui scope le job au terminal courant côté UBIK-DESKTOP."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "trigger":  {"type": "string", "description": "Identifiant du raccourci (ex: 'doc', 'review', 'fix', ou nom d'un agent)."},
-                "task":     {"type": "string", "description": "Instruction passée en initialDirective au sous-agent."},
-                "agent_id": {"type": "string", "description": "Manifest agent à spawner. Défaut: 'ide-worker' pour les commandes."},
-                "repo_url": {"type": "string", "description": "URL du repo GitHub à cloner (https://github.com/owner/repo)."},
+                "trigger":       {"type": "string", "description": "Identifiant du raccourci (ex: 'doc', 'review', 'fix', ou nom d'un agent)."},
+                "task":          {"type": "string", "description": "Instruction passée en initialDirective au sous-agent."},
+                "agent_id":      {"type": "string", "description": "Manifest agent à spawner ('ide-worker' pour les commandes, ou id de manifest)."},
+                "repo_url":      {"type": "string", "description": "URL du repo GitHub à cloner (https://github.com/owner/repo)."},
+                "parent_tab_id": {"type": "string", "description": "ID du shell tab UBIK-DESKTOP qui a déclenché le raccourci. À recopier TEL QUEL depuis le prompt."},
             },
-            "required": ["trigger", "task", "repo_url"],
+            "required": ["trigger", "task", "agent_id", "repo_url", "parent_tab_id"],
         },
     },
     {
