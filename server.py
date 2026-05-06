@@ -714,6 +714,41 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "activity_live",
+        "description": "Flux des derniers événements bruts d'activité (kind: agent | session | system) toutes catégories confondues. Vue chronologique récente. Renvoie une liste d'ActivityEvent {id, ts, tab_id, agent, step, detail, kind, workspace_id, job_id}, du plus ancien au plus récent.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Nombre max d'événements (défaut 100, max 500)."},
+            },
+        },
+    },
+    {
+        "name": "activity_agents",
+        "description": "Liste agrégée des agents actifs récemment, triée par dernière activité. Pour chaque agent : nombre d'événements, dernier step, dernier détail, dernier tab_id, premier et dernier timestamp. Pour 'qui travaille en ce moment ?' ou 'depuis quand cet agent agit-il ?'.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "activity_sessions",
+        "description": "Liste des sessions terminal/agent (kind=session) groupées par tab_id, triées par dernière activité. Pour chaque session : tab_id, agent, started_at, last_step, last_ts, event_count, active (false si session:exit observé).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "activity_tasks",
+        "description": "Événements liés aux tâches et à la planification : plan_step, spawn_agent, spawn_agents, task_create, task_update, task_done, task_complete, subthread_create. Permet de comprendre le découpage du travail en cours.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Nombre max d'événements task (défaut 100, max 500)."},
+            },
+        },
+    },
+    {
+        "name": "activity_health",
+        "description": "État de santé du laptop user en temps réel : RAM (total/utilisé/disponible), Swap, load CPU 1/5/15 min, nombre de cores, uptime, statut earlyoom (filet anti-OOM), top 8 process par RAM. À utiliser AVANT de spawner plusieurs agents en parallèle, ou pour diagnostiquer un ralentissement. Seuils : RAM > 70 % = tendu, RAM > 85 % = critique, swap > 10 % utilisé = paging probable.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
     # ── IDE Shortcuts ─────────────────────────────────────────────────────────
     {
         "name": "ide_shortcut_invoke",
@@ -889,6 +924,156 @@ TOOLS = [
             "properties": {},
         },
     },
+    # ── IDE memory search (sessions + reports + working-memory) ───────────────
+    {
+        "name": "ide_memory_list",
+        "description": (
+            "Liste les documents de mémoire IDE (sessions terminal sauvegardées, rapports d'agents, "
+            "working-memory) avec leurs métadonnées seulement (pas le contenu). "
+            "Utiliser pour explorer ce qui est disponible avant un get/search."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source":       {"type": "string", "enum": ["session", "report", "working"], "description": "Filtre par type de source (optionnel)."},
+                "workspace_id": {"type": "string", "description": "Filtre par workspace (optionnel)."},
+                "since":        {"type": "integer", "description": "Timestamp epoch ms : ne retourner que les docs depuis cette date (optionnel)."},
+                "limit":        {"type": "integer", "description": "Nombre max de résultats (défaut 50, max 500)."},
+            },
+        },
+    },
+    {
+        "name": "ide_memory_get",
+        "description": (
+            "Récupère le contenu complet et nettoyé (ANSI strippé) d'un document de mémoire IDE. "
+            "À appeler après ide_memory_list ou ide_memory_search pour lire le détail d'un doc identifié."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "doc_id": {"type": "string", "description": "Identifiant du document (champ 'doc_id' retourné par list/search)."},
+                "source": {"type": "string", "enum": ["session", "report", "working"], "description": "Source du doc (optionnel, désambigue si plusieurs doc_id collide)."},
+            },
+            "required": ["doc_id"],
+        },
+    },
+    {
+        "name": "ide_memory_search",
+        "description": (
+            "Recherche full-text (FTS5) sur toute la mémoire IDE — sessions terminal, rapports d'agents, "
+            "working-memory — avec extraits contextualisés. Idéal pour retrouver une commande exécutée, "
+            "une décision d'agent, un fichier touché ou un fragment de conversation. "
+            "Ranking BM25 (rank ascendant = plus pertinent)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query":         {"type": "string", "description": "Requête (mots-clés). Tokens AND-isés automatiquement."},
+                "source":        {"type": "string", "enum": ["session", "report", "working"], "description": "Filtre par type de source (optionnel)."},
+                "workspace_id":  {"type": "string", "description": "Filtre par workspace (optionnel)."},
+                "limit":         {"type": "integer", "description": "Nombre max de résultats (défaut 10, max 50)."},
+                "snippet_chars": {"type": "integer", "description": "Taille approximative des extraits en caractères (défaut 240, max 1000)."},
+            },
+            "required": ["query"],
+        },
+    },
+    # ── PROJECT module ────────────────────────────────────────────────────────
+    {
+        "name": "project_new",
+        "description": (
+            "Crée un nouveau projet PROJECT : git init dans ~/projects/<slug>/, "
+            ".ubik-project.yaml initial, push GitHub si github_url. Si kickoff=true (défaut), "
+            "spawn immédiatement le CEO avec le brief pour démarrer la pipeline 7-phases."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "slug":       {"type": "string", "description": "Identifiant kebab-case (ex: 'mobile-onboarding-v2')"},
+                "brief":      {"type": "string", "description": "Description one-liner du projet"},
+                "github_url": {"type": "string", "description": "URL GitHub optionnelle (ssh ou https) — push initial si fournie"},
+                "kickoff":    {"type": "boolean", "description": "Spawn CEO immédiatement (défaut true)"},
+            },
+            "required": ["slug", "brief"],
+        },
+    },
+    {
+        "name": "project_list",
+        "description": "Liste tous les projets PROJECT (scan ~/projects/*/.ubik-project.yaml).",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "project_status",
+        "description": "État complet d'un projet : phase courante, CODIR/DCs engagés, escalations en attente, repo path.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "project_id ou slug"},
+            },
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "project_approve",
+        "description": (
+            "Répond à une escalation en attente (PHASE 1 ou PHASE 7). "
+            "decision = 'go' (continue pipeline) ou 'no-go' (CEO route le retour selon le commentaire)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "escalation_id": {"type": "string"},
+                "decision":      {"type": "string", "enum": ["go", "no-go"]},
+                "comment":       {"type": "string", "description": "Obligatoire si no-go"},
+            },
+            "required": ["escalation_id", "decision"],
+        },
+    },
+    {
+        "name": "project_link",
+        "description": "Ajoute/remplace le remote GitHub d'un projet existant.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "github_url": {"type": "string"},
+            },
+            "required": ["project_id", "github_url"],
+        },
+    },
+    {
+        "name": "project_pause",
+        "description": "Met un projet en pause (les CODIR/DC ne reçoivent plus de nouveaux briefs jusqu'à project_resume).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"project_id": {"type": "string"}},
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "project_resume",
+        "description": "Reprend un projet en pause.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"project_id": {"type": "string"}},
+            "required": ["project_id"],
+        },
+    },
+    {
+        "name": "project_events",
+        "description": (
+            "Stream filtré des events project.* pour un projet. Consommé par PROJECT panel "
+            "(tableau de bord read-only) et par tout agent qui veut suivre l'avancement."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string"},
+                "since":      {"type": "integer", "description": "Timestamp ms — ne retourne que les events après cette date"},
+                "limit":      {"type": "integer", "description": "Max events (défaut 50, max 200)"},
+            },
+            "required": ["project_id"],
+        },
+    },
 ]
 
 def handle_tool(name: str, args: dict) -> str:
@@ -972,16 +1157,7 @@ def handle_tool(name: str, args: dict) -> str:
         return f"Envoyé ({len(chunks)} chunks)."
 
     elif name == "ubik_read":
-        tab_id = args["tab_id"]
-        result = http("GET", f"/pty/read/{tab_id}")
-        output = result.get("output", "")
-        if not output:
-            return "(buffer vide — ubik-genie n'a peut-être pas encore répondu)"
-        # Strip ANSI for readability
-        clean = re.sub(r'\x1b\[[0-9;?]*[a-zA-Z]', '', output)
-        clean = re.sub(r'\x1b\][^\x07]*\x07', '', clean)
-        clean = clean.replace('\r\n', '\n').replace('\r', '')
-        return clean.strip()
+        return _ubik_read(args)
 
     elif name == "ubik_interrupt":
         tab_id  = args["tab_id"]
@@ -1276,16 +1452,37 @@ def handle_tool(name: str, args: dict) -> str:
     elif name == "codir_coo":
         return _codir_spawn("coo", args)
 
+    elif name == "project_new":
+        return _project_new(args)
+    elif name == "project_list":
+        return _project_list(args)
+    elif name == "project_status":
+        return _project_status(args)
+    elif name == "project_approve":
+        return _project_approve(args)
+    elif name == "project_link":
+        return _project_link(args)
+    elif name == "project_pause":
+        return _project_pause(args)
+    elif name == "project_resume":
+        return _project_resume(args)
+    elif name == "project_events":
+        return _project_events(args)
+
     elif name == "activity_emit":
         return _activity_emit(args)
 
     elif name == "activity_read":
         return _activity_read(args)
 
+    elif name in ("activity_live", "activity_agents", "activity_sessions", "activity_tasks", "activity_health"):
+        return _activity_v2(name, args)
+
     elif name == "ide_shortcut_invoke":
         return _ide_shortcut_invoke(args)
 
-    elif name in ("ide_shortcut_run", "ide_shortcut_status", "ide_shortcut_result", "ide_shortcut_finish", "ide_shortcut_list"):
+    elif name in ("ide_shortcut_run", "ide_shortcut_status", "ide_shortcut_result", "ide_shortcut_finish", "ide_shortcut_list",
+                  "ide_memory_list", "ide_memory_get", "ide_memory_search"):
         return json.dumps(desktop_tools_call(name, args), ensure_ascii=False)
 
     return f"Outil inconnu: {name}"
@@ -1312,9 +1509,127 @@ def _activity_emit(args: dict) -> str:
     agent = os.environ.get("UBIK_AGENT_ID") or tab_id or "unknown"
     try:
         http("POST", "/activity", {"tab_id": tab_id, "agent": agent, "step": step, "detail": detail})
+        # Mirror project.* events into .ubik-project.yaml state (best-effort, never blocking)
+        if step.startswith("project."):
+            try:
+                _project_mirror_event(step, detail)
+            except Exception:
+                pass
         return f"[activity] emitted: {step}"
     except Exception as e:
         return f"[activity] error: {e}"
+
+
+def _project_mirror_event(step: str, detail: str) -> None:
+    """Parse a project.<...> event and update the matching .ubik-project.yaml.
+    Maps emitted events to state mutations so PROJECT panel reflects live progress."""
+    import uuid
+    try:
+        payload = json.loads(detail) if detail else {}
+    except Exception:
+        return
+    project_id = payload.get("project_id")
+    if not project_id:
+        return
+    path, state = _project_load(project_id)
+    if path is None or state is None:
+        return
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    sub = step[len("project."):]
+    parts = sub.split(".")
+
+    if parts == ["phase", "changed"]:
+        new_phase = payload.get("phase")
+        if isinstance(new_phase, int) and 1 <= new_phase <= 7:
+            state["current_phase"] = new_phase
+            state.setdefault("phase_history", []).append({
+                "phase": new_phase, "timestamp": now_iso, "status": "started",
+            })
+
+    elif len(parts) == 3 and parts[0] == "codir" and parts[2] == "team":
+        codir_id = parts[1]  # cto, cdo, ciso, cpo, coo
+        engaged = state.setdefault("codir_engaged", [])
+        if codir_id not in engaged:
+            engaged.append(codir_id)
+        dcs = payload.get("dcs", [])
+        if isinstance(dcs, list):
+            existing = state.setdefault("dcs_engaged", [])
+            for dc in dcs:
+                if dc not in existing:
+                    existing.append(dc)
+
+    elif parts == ["escalation", "requested"]:
+        escalation_id = payload.get("escalation_id") or f"esc-{uuid.uuid4().hex[:8]}"
+        state.setdefault("escalations", []).append({
+            "id": escalation_id,
+            "from": payload.get("from", "?"),
+            "to": payload.get("to", "?"),
+            "brief": payload.get("brief", ""),
+            "status": "pending",
+            "created_at": now_iso,
+        })
+
+    elif parts == ["completed"]:
+        state["status"] = "completed"
+        state.setdefault("phase_history", []).append({
+            "phase": 7, "timestamp": now_iso, "status": "completed",
+        })
+
+    elif parts == ["no-go", "routed"]:
+        target_phase = payload.get("phase")
+        reason = payload.get("reason", "")
+        if isinstance(target_phase, int) and 1 <= target_phase <= 7:
+            state["current_phase"] = target_phase
+            state.setdefault("phase_history", []).append({
+                "phase": target_phase, "timestamp": now_iso, "status": f"no-go-routed: {reason}",
+            })
+
+    elif parts == ["team", "assembled"]:
+        # PHASE 2 wrap-up : consolidated team composition (CODIR + DCs declared portfolios)
+        composition = payload.get("composition") or {}
+        if isinstance(composition, dict):
+            state["team_composition"] = composition
+        codirs = payload.get("codir_engaged", [])
+        if isinstance(codirs, list):
+            existing = state.setdefault("codir_engaged", [])
+            for c in codirs:
+                if c not in existing:
+                    existing.append(c)
+
+    elif parts == ["work", "dispatched"]:
+        # PHASE 3 wrap-up : full dispatch tree (CODIR → DC → specialists subthreads)
+        tree = payload.get("tree")
+        if tree is not None:
+            state["dispatch_tree"] = tree
+        subthreads = payload.get("subthreads", [])
+        if isinstance(subthreads, list):
+            state.setdefault("subthreads", []).extend(subthreads)
+
+    _project_save(path, state)
+
+
+def _activity_v2(name: str, args: dict) -> str:
+    """Wrappers HTTP pour les 5 nouveaux tools Activity (alignés sur les onglets du panel).
+    Endpoints exposés par l'API UBIK-DESKTOP locale (port 7891 / 8801 health)."""
+    try:
+        if name == "activity_live":
+            limit = max(1, min(int(args.get("limit", 100)), 500))
+            data = http("GET", f"/activity/live?limit={limit}")
+        elif name == "activity_agents":
+            data = http("GET", "/activity/agents")
+        elif name == "activity_sessions":
+            data = http("GET", "/activity/sessions")
+        elif name == "activity_tasks":
+            limit = max(1, min(int(args.get("limit", 100)), 500))
+            data = http("GET", f"/activity/tasks?limit={limit}")
+        elif name == "activity_health":
+            data = http("GET", "/system/health")
+        else:
+            return f"[activity] outil inconnu: {name}"
+        return json.dumps(data, ensure_ascii=False, default=str)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e), "tool": name}, ensure_ascii=False)
 
 
 def _activity_read(args: dict) -> str:
@@ -1338,10 +1653,21 @@ def _activity_read(args: dict) -> str:
 
 
 def _codir_spawn(member: str, args: dict) -> str:
-    """Spawn a CODIR member (cto/cdo/ciso/cpo/coo) with an enriched directive."""
+    """Spawn a CODIR member (cto/cdo/ciso/cpo/coo) with an enriched directive.
+    Si appelé depuis la chaîne d'un projet (parent UBIK_TAB_ID contient -proj-<id>),
+    propage le marker -proj-<id> dans le tab_id du CODIR pour que le filtre frontend
+    cache la fenêtre. Sinon, naming classique (visible pour usage direct)."""
     task = args.get("task", "")
     context = args.get("context", "")
-    tab_id = f"codir-{member}-{int(time.time())}"
+
+    # Convention naming -proj-<id> : héritage depuis le parent
+    parent_tab = os.environ.get("UBIK_TAB_ID", "")
+    proj_match = re.search(r"-proj-([a-f0-9]+)", parent_tab)
+    if proj_match:
+        pid = proj_match.group(1)
+        tab_id = f"codir-{member}-proj-{pid}-{int(time.time())}"
+    else:
+        tab_id = f"codir-{member}-{int(time.time())}"
 
     # Enrich directive with QUBIK suggestions (agents + skills relevant to the task)
     qubik = _qubik_suggest(task)
@@ -1351,22 +1677,45 @@ def _codir_spawn(member: str, args: dict) -> str:
     if qubik.get("suggested_agent_id"):
         suggestions += f"\n[QUBIK — agent specialist pressenti : {qubik['suggested_agent_id']}]"
 
-    directive_parts = [task]
+    # Inject project_id + workspace at the TOP of the directive — sinon CODIR
+    # hallucine le project_id au lieu de le déduire du yaml (Bug E observé 2026-05-03).
+    workspace = args.get("workspace") or ""
+    header_parts = []
+    if proj_match:
+        header_parts.append(f"[PROJECT CONTEXT — utilise EXACTEMENT ces valeurs, ne pas inventer]")
+        header_parts.append(f"project_id: {proj_match.group(1)}")
+        if workspace:
+            header_parts.append(f"workspace: {workspace}")
+        header_parts.append("")  # blank line before task
+
+    directive_parts = []
+    if header_parts:
+        directive_parts.append("\n".join(header_parts) + "\n")
+    directive_parts.append(task)
     if context:
         directive_parts.append(f"\nContexte : {context}")
     if suggestions:
         directive_parts.append(suggestions)
     directive = "".join(directive_parts)
 
+    # Note 2026-05-03 : le mode async (threading.Thread daemon) plantait silencieusement
+    # côté CEO process — PTYs jamais créés. Revenu en sync. Bloque 20s × N codir mais
+    # au moins ça spawne. À fixer dans une session dédiée (Bug I).
     return _ubik_create_session({
         "tab_id":           tab_id,
         "agent_id":         f"codir-{member}",
         "initialDirective": directive,
-        "workspace":        args.get("workspace"),
+        "workspace":        workspace or None,
         "memory_profile":   "full",
     })
 
 
+# ⚠️ NE PAS SUPPRIMER ces wrappers même si Pyright les flag comme "unused".
+# Ils sont appelés via `getattr(mod, "_<tool_name>")` depuis UBIK-CLI
+# (`UBIK-CLI/src/ubik_cli/tools.py:_exec_system`). Le dispatch interne `if/elif`
+# de server.py (utilisé quand server.py tourne en MCP stdio standalone) court-
+# circuite ces wrappers, mais UBIK-CLI les utilise. Bug observé 2026-05-03 :
+# leur suppression a cassé silencieusement la pipeline CEO → CODIR.
 def _codir_cto(args: dict) -> str:  return _codir_spawn("cto", args)
 def _codir_cdo(args: dict) -> str:  return _codir_spawn("cdo", args)
 def _codir_ciso(args: dict) -> str: return _codir_spawn("ciso", args)
@@ -1374,11 +1723,343 @@ def _codir_cpo(args: dict) -> str:  return _codir_spawn("cpo", args)
 def _codir_coo(args: dict) -> str:  return _codir_spawn("coo", args)
 
 
-def _ubik_list_sessions(args: dict) -> str:
+def _ubik_list_sessions(_args: dict) -> str:
+    """Wrapper appelé par UBIK-CLI via getattr (cf. note ci-dessus)."""
     sessions = http("GET", "/pty/sessions")
     if isinstance(sessions, list):
         return "\n".join(sessions) if sessions else "Aucune session active."
     return str(sessions)
+
+
+# ═══ PROJECT module ════════════════════════════════════════════════════════
+# Pipeline 7 phases : CEO → CODIR → DC → Specialists.
+# 1 projet = 1 git repo dans ~/projects/<slug>/ + push GitHub optionnel.
+# État persisté dans .ubik-project.yaml à la racine du repo.
+# Events émis via activity_emit avec namespace project.<phase>.<event>.
+
+PROJECTS_ROOT = Path.home() / "projects"
+
+
+def _project_path(project_id_or_slug: str):
+    """Resolve project_id or slug → repo path. Scan ~/projects/*/.ubik-project.yaml.
+    Returns Path or None if not found."""
+    if not PROJECTS_ROOT.exists():
+        return None
+    for proj_dir in PROJECTS_ROOT.iterdir():
+        if not proj_dir.is_dir():
+            continue
+        yaml_path = proj_dir / ".ubik-project.yaml"
+        if not yaml_path.exists():
+            continue
+        try:
+            with open(yaml_path) as f:
+                state = yaml.safe_load(f) or {}
+            if (state.get("project_id") == project_id_or_slug
+                    or state.get("slug") == project_id_or_slug
+                    or proj_dir.name == project_id_or_slug):
+                return proj_dir
+        except Exception:
+            continue
+    return None
+
+
+def _project_load(project_id_or_slug: str):
+    path = _project_path(project_id_or_slug)
+    if path is None:
+        return None, None
+    try:
+        with open(path / ".ubik-project.yaml") as f:
+            return path, (yaml.safe_load(f) or {})
+    except Exception:
+        return path, None
+
+
+def _project_save(path: Path, state: dict) -> None:
+    with open(path / ".ubik-project.yaml", "w") as f:
+        yaml.safe_dump(state, f, sort_keys=False, allow_unicode=True)
+
+
+def _project_emit(project_id: str, event: str, payload=None) -> None:
+    """Emit a project.* event via the activity bus."""
+    detail = json.dumps({"project_id": project_id, **(payload or {})}, ensure_ascii=False)
+    try:
+        http("POST", "/activity", {
+            "tab_id": f"project-{project_id}",
+            "agent": "project",
+            "step": f"project.{event}",
+            "detail": detail,
+        })
+    except Exception:
+        pass
+
+
+def _project_new(args: dict) -> str:
+    import uuid
+    slug = args.get("slug", "").strip()
+    brief = args.get("brief", "").strip()
+    github_url = args.get("github_url")
+    kickoff = args.get("kickoff", True)
+
+    if not slug or not brief:
+        return json.dumps({"ok": False, "error": "slug et brief requis"})
+    if not re.match(r"^[a-z0-9][a-z0-9-]*$", slug):
+        return json.dumps({"ok": False, "error": "slug doit être kebab-case (a-z, 0-9, -)"})
+
+    PROJECTS_ROOT.mkdir(parents=True, exist_ok=True)
+    repo_path = PROJECTS_ROOT / slug
+    if repo_path.exists():
+        return json.dumps({"ok": False, "error": f"projet {slug} existe déjà à {repo_path}"})
+
+    project_id = uuid.uuid4().hex[:12]
+    repo_path.mkdir(parents=True)
+
+    try:
+        subprocess.run(["git", "init", "-b", "main"], cwd=repo_path, check=True, capture_output=True)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": f"git init failed: {e}"})
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    state = {
+        "project_id": project_id,
+        "slug": slug,
+        "brief": brief,
+        "created_at": now_iso,
+        "current_phase": 1,
+        "phase_history": [{"phase": 1, "timestamp": now_iso, "status": "started"}],
+        "codir_engaged": [],
+        "dcs_engaged": [],
+        "escalations": [],
+        "github_remote": github_url,
+        "status": "active",
+    }
+    _project_save(repo_path, state)
+
+    try:
+        subprocess.run(["git", "add", ".ubik-project.yaml"], cwd=repo_path, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", f"chore: bootstrap project {slug}\n\n{brief}"],
+                       cwd=repo_path, check=True, capture_output=True)
+    except Exception:
+        pass
+
+    if github_url:
+        try:
+            subprocess.run(["git", "remote", "add", "origin", github_url], cwd=repo_path, check=True, capture_output=True)
+            subprocess.run(["git", "push", "-u", "origin", "main"], cwd=repo_path, check=True, capture_output=True, timeout=30)
+        except Exception:
+            pass
+
+    _project_emit(project_id, "created", {"slug": slug, "brief": brief, "repo_path": str(repo_path)})
+
+    ceo_tab_id = None
+    if kickoff:
+        try:
+            # Convention naming `-proj-<id>` : permet au filtre frontend (App.tsx)
+            # de ne pas ouvrir de WebView pour cette session.
+            ceo_tab_id = f"ceo-proj-{project_id}"
+            # Directive courte : le brief complet vit dans .ubik-project.yaml (workspace),
+            # le CEO le lit en premier acte. Évite que le prompt soit saturé par un brief long
+            # qui pousse le LLM à répondre en markdown au lieu d'invoquer ses tools.
+            directive = (
+                f"[PROJECT KICKOFF — pipeline 7 phases]\n"
+                f"project_id: {project_id}\n"
+                f"\n"
+                f"Action 1 — lis `.ubik-project.yaml` dans ton workspace pour récupérer le brief complet "
+                f"et le contexte projet (slug, brief, repo_path).\n"
+                f"\n"
+                f"Action 2 — démarre PHASE 1 (Validation feuille de route) : qualifie les CODIR concernés, "
+                f"segmente la demande, convoque-les en parallèle via `codir_*(task, context)`, "
+                f"consolide leurs réponses, présente la feuille de route consolidée à l'USER via "
+                f"`emit_report`.\n"
+                f"\n"
+                f"Action 3 — à CHAQUE transition de phase, appelle "
+                f"`activity_emit(step='project.phase.changed', detail='{{\"project_id\": \"{project_id}\", \"phase\": <N>}}')`. "
+                f"Voir la section 'Format des events' de ton manifest pour les schémas JSON stricts."
+            )
+            _ubik_create_session({
+                "tab_id": ceo_tab_id,
+                "agent_id": "ubik-ceo",
+                "initialDirective": directive,
+                "workspace": str(repo_path),
+                "memory_profile": "full",
+            })
+            _project_emit(project_id, "ceo.kickoff", {"tab_id": ceo_tab_id})
+        except Exception as e:
+            return json.dumps({"ok": True, "project_id": project_id, "slug": slug,
+                               "repo_path": str(repo_path), "kickoff_error": str(e)})
+
+    return json.dumps({
+        "ok": True,
+        "project_id": project_id,
+        "slug": slug,
+        "repo_path": str(repo_path),
+        "ceo_tab_id": ceo_tab_id,
+        "github_remote": github_url,
+    })
+
+
+def _project_list(_args: dict) -> str:
+    projects = []
+    if PROJECTS_ROOT.exists():
+        for proj_dir in sorted(PROJECTS_ROOT.iterdir()):
+            if not proj_dir.is_dir():
+                continue
+            yaml_path = proj_dir / ".ubik-project.yaml"
+            if not yaml_path.exists():
+                continue
+            try:
+                with open(yaml_path) as f:
+                    state = yaml.safe_load(f) or {}
+                projects.append({
+                    "project_id": state.get("project_id"),
+                    "slug": state.get("slug", proj_dir.name),
+                    "brief": state.get("brief", ""),
+                    "current_phase": state.get("current_phase"),
+                    "status": state.get("status", "unknown"),
+                    "codir_engaged": state.get("codir_engaged", []),
+                    "github_remote": state.get("github_remote"),
+                })
+            except Exception:
+                pass
+    return json.dumps({"ok": True, "projects": projects})
+
+
+def _project_status(args: dict) -> str:
+    project_id = args.get("project_id", "").strip()
+    if not project_id:
+        return json.dumps({"ok": False, "error": "project_id requis"})
+    path, state = _project_load(project_id)
+    if path is None or state is None:
+        return json.dumps({"ok": False, "error": f"projet {project_id} introuvable"})
+    pending = [e for e in state.get("escalations", []) if e.get("status") == "pending"]
+    return json.dumps({
+        "ok": True,
+        "project_id": state.get("project_id"),
+        "slug": state.get("slug"),
+        "brief": state.get("brief"),
+        "current_phase": state.get("current_phase"),
+        "phase_history": state.get("phase_history", []),
+        "codir_engaged": state.get("codir_engaged", []),
+        "dcs_engaged": state.get("dcs_engaged", []),
+        "pending_escalations": pending,
+        "status": state.get("status"),
+        "github_remote": state.get("github_remote"),
+        "repo_path": str(path),
+    })
+
+
+def _project_approve(args: dict) -> str:
+    escalation_id = args.get("escalation_id", "").strip()
+    decision = args.get("decision", "").strip()
+    comment = args.get("comment", "").strip()
+    if decision not in ("go", "no-go"):
+        return json.dumps({"ok": False, "error": "decision doit être 'go' ou 'no-go'"})
+    if decision == "no-go" and not comment:
+        return json.dumps({"ok": False, "error": "commentaire obligatoire si no-go"})
+
+    if not PROJECTS_ROOT.exists():
+        return json.dumps({"ok": False, "error": "aucun projet"})
+
+    for proj_dir in PROJECTS_ROOT.iterdir():
+        if not proj_dir.is_dir():
+            continue
+        yaml_path = proj_dir / ".ubik-project.yaml"
+        if not yaml_path.exists():
+            continue
+        try:
+            with open(yaml_path) as f:
+                state = yaml.safe_load(f) or {}
+            for esc in state.get("escalations", []):
+                if esc.get("id") == escalation_id:
+                    esc["status"] = "resolved"
+                    esc["decision"] = decision
+                    esc["comment"] = comment
+                    esc["resolved_at"] = datetime.now(timezone.utc).isoformat()
+                    _project_save(proj_dir, state)
+                    _project_emit(state.get("project_id", "?"), "escalation.resolved", {
+                        "escalation_id": escalation_id,
+                        "decision": decision,
+                        "comment": comment,
+                    })
+                    return json.dumps({"ok": True, "escalation_id": escalation_id,
+                                       "decision": decision, "project_id": state.get("project_id")})
+        except Exception:
+            continue
+    return json.dumps({"ok": False, "error": f"escalation {escalation_id} introuvable"})
+
+
+def _project_link(args: dict) -> str:
+    project_id = args.get("project_id", "").strip()
+    github_url = args.get("github_url", "").strip()
+    if not project_id or not github_url:
+        return json.dumps({"ok": False, "error": "project_id et github_url requis"})
+    path, state = _project_load(project_id)
+    if path is None or state is None:
+        return json.dumps({"ok": False, "error": "projet introuvable"})
+    try:
+        result = subprocess.run(["git", "remote"], cwd=path, capture_output=True, text=True)
+        if "origin" in result.stdout.split():
+            subprocess.run(["git", "remote", "set-url", "origin", github_url], cwd=path, check=True, capture_output=True)
+        else:
+            subprocess.run(["git", "remote", "add", "origin", github_url], cwd=path, check=True, capture_output=True)
+    except Exception as e:
+        return json.dumps({"ok": False, "error": f"git remote failed: {e}"})
+    state["github_remote"] = github_url
+    _project_save(path, state)
+    _project_emit(state.get("project_id", "?"), "github.linked", {"github_url": github_url})
+    return json.dumps({"ok": True, "github_remote": github_url})
+
+
+def _project_pause(args: dict) -> str:
+    project_id = args.get("project_id", "").strip()
+    path, state = _project_load(project_id)
+    if path is None or state is None:
+        return json.dumps({"ok": False, "error": "projet introuvable"})
+    state["status"] = "paused"
+    _project_save(path, state)
+    _project_emit(state.get("project_id", "?"), "paused", {})
+    return json.dumps({"ok": True, "status": "paused"})
+
+
+def _project_resume(args: dict) -> str:
+    project_id = args.get("project_id", "").strip()
+    path, state = _project_load(project_id)
+    if path is None or state is None:
+        return json.dumps({"ok": False, "error": "projet introuvable"})
+    state["status"] = "active"
+    _project_save(path, state)
+    _project_emit(state.get("project_id", "?"), "resumed", {})
+    return json.dumps({"ok": True, "status": "active"})
+
+
+def _project_events(args: dict) -> str:
+    project_id = args.get("project_id", "").strip()
+    since = args.get("since")
+    limit = min(int(args.get("limit", 50)), 200)
+    if not project_id:
+        return json.dumps({"ok": False, "error": "project_id requis"})
+    try:
+        events = http("GET", f"/activity?limit={limit * 4}")
+        if not events or isinstance(events, dict):
+            return json.dumps({"ok": True, "events": []})
+        filtered = []
+        for e in events:
+            step = e.get("step", "")
+            ts = e.get("ts", 0)
+            if since and ts <= since:
+                continue
+            if not step.startswith("project."):
+                continue
+            try:
+                detail_obj = json.loads(e.get("detail", "") or "{}")
+                if detail_obj.get("project_id") == project_id:
+                    filtered.append(e)
+            except Exception:
+                pass
+            if len(filtered) >= limit:
+                break
+        return json.dumps({"ok": True, "events": filtered})
+    except Exception as e:
+        return json.dumps({"ok": False, "error": str(e)})
 
 
 def _ubik_read(args: dict) -> str:
@@ -1402,6 +2083,16 @@ def _ubik_read(args: dict) -> str:
 
 
 def _ubik_create_session(args: dict) -> str:
+    """Spawn UBIK agent — chemin unique, contrat verrouillé.
+
+    Architecture canonique 2026-05-03 (cf. ~/.ubik-memory/projects/ubik-desktop.md) :
+    - TOUT spawn d'Agent MCP UBIK passe par cette fonction
+    - JAMAIS headless (legacy retiré) — tout agent vit dans le MCP Terminal
+      unifié (sidebar + zone XTerm), observable et killable par l'user
+    - Tous les wrappers (codir_*, project_new, futurs dc_*/specialist_*)
+      DOIVENT enrichir leurs args avant d'appeler cette fonction, pas
+      bypasser /pty/create directement
+    """
     tab_id = args["tab_id"]
     agent_manifest = args.get("agent_id")
     agents_dir = Path.home() / ".ubik-desktop" / "agents"
@@ -1420,13 +2111,19 @@ def _ubik_create_session(args: dict) -> str:
     if args.get("memory_profile", "full") == "worker":
         env["UBIK_MEMORY_MODE"] = "worker"
     env.update(_nvm_path_env())
+    # Skip prompt_toolkit cursor position request (CSI 6n) — xterm.js dans le
+    # MCP Terminal ne répond pas → "WARNING: your terminal doesn't support CPR".
+    env["PROMPT_TOOLKIT_NO_CPR"] = "1"
 
+    # headless verrouillé à False : tout agent UBIK doit vivre dans le MCP
+    # Terminal unifié. L'arg "headless" éventuellement passé par l'appelant
+    # est ignoré silencieusement (legacy).
     body = {
         "tab_id": tab_id,
         "rows": 40,
         "cols": 200,
         "agent": agent_path,
-        "headless": bool(args.get("headless", False)),
+        "headless": False,
         "env": env,
     }
     result = http("POST", "/pty/create", body)
